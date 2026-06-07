@@ -5,18 +5,20 @@ template detection couldn't classify.
 Helps answer: are these teletype continuation pages, garbled form numbers, or
 something genuinely new?
 
-Usage:
-    python inspect_unknowns.py data/ocr/bundy-part-01/pages.jsonl
+Usage (run from project root):
+    python scripts/inspect_unknowns.py data/ocr/bundy-part-01/pages.jsonl
 """
 
 import json
 import sys
 from pathlib import Path
 
+# Make src/ importable so we can reuse the template detector from the cleaner.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 sys.stdout.reconfigure(encoding="utf-8")
 
-# Mirror the template detection from clean_pages.py.
-from clean_pages import detect_template
+from src.clean_pages import detect_template
 
 
 def main(jsonl_path: Path) -> None:
@@ -46,5 +48,5 @@ def main(jsonl_path: Path) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        sys.exit("Usage: python inspect_unknowns.py <path-to-pages.jsonl>")
+        sys.exit("Usage: python scripts/inspect_unknowns.py <path-to-pages.jsonl>")
     main(Path(sys.argv[1]))

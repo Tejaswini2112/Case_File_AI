@@ -3,8 +3,8 @@ Quick investigation tool: show every page that tripped the fact-preservation
 guardrail, with each lost fact shown alongside its raw-text context so we
 can tell boilerplate false-flags from real case-fact losses.
 
-Usage:
-    python inspect_flags.py data/ocr/bundy-part-01/pages.jsonl
+Usage (run from project root):
+    python scripts/inspect_flags.py data/ocr/bundy-part-01/pages.jsonl
 """
 
 import json
@@ -47,5 +47,5 @@ def main(jsonl_path: Path) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        sys.exit("Usage: python inspect_flags.py <path-to-pages.jsonl>")
+        sys.exit("Usage: python scripts/inspect_flags.py <path-to-pages.jsonl>")
     main(Path(sys.argv[1]))

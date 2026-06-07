@@ -4,9 +4,9 @@ STEP 0 — Is your FBI PDF real text or a scanned image?
 This is the first thing to run. It answers the one question that decides
 your entire Phase 1 parsing approach. Costs nothing, takes 30 seconds.
 
-Usage:
+Usage (run from project root):
     1. Drop a PDF into data/raw/  (e.g. Bundy Part 1 from vault.fbi.gov)
-    2. python probe.py data/raw/your-file.pdf
+    2. python src/probe.py data/raw/your-file.pdf
 
 Read the verdict at the bottom of the output.
 """
@@ -80,7 +80,7 @@ def probe(pdf_path: str) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python probe.py <path-to-pdf>")
-        print("Example: python probe.py data/raw/bundy-part-01.pdf")
+        print("Usage: python src/probe.py <path-to-pdf>")
+        print("Example: python src/probe.py data/raw/bundy-part-01.pdf")
         sys.exit(1)
     probe(sys.argv[1])

@@ -9,8 +9,8 @@ Each JSONL row carries the metrics needed to score and route the page later
 (see score_pages.py) but does NOT yet assign a bucket — that decision comes
 after looking at the histogram and picking a threshold.
 
-Usage:
-    python ocr.py data/raw/bundy-part-01.pdf
+Usage (run from project root):
+    python src/ocr.py data/raw/bundy-part-01.pdf
 """
 
 import json

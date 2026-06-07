@@ -11,8 +11,8 @@ It classifies each page into a quality tier from the metrics ocr.py already
 captured (confidence, ASCII letter ratio, char count) so you can see at a
 glance whether the scan is good enough to chunk or needs a second look.
 
-Usage:
-    python ocr_report.py data/ocr/bundy-part-01/pages.jsonl
+Usage (run from project root):
+    python scripts/ocr_report.py data/ocr/bundy-part-01/pages.jsonl
 """
 
 import csv

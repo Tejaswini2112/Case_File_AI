@@ -8,12 +8,12 @@ Writes: data/ocr/<name>/pages.jsonl   (adds clean_text + diagnostic fields)
 Only processes pages where bucket == "clean". 4-750 DELETED-PAGE sheets, even
 when they land in the clean bucket, are routed to missing-info instead of cleaned.
 
-See CaseFile-AI-Cleaner-Spec.md for the design.
+See docs/cleaner-spec.md for the design.
 
-Usage:
-    python clean_pages.py data/ocr/bundy-part-01/pages.jsonl
-    python clean_pages.py data/ocr/bundy-part-01/pages.jsonl --detect-only
-    python clean_pages.py data/ocr/bundy-part-01/pages.jsonl --pages 4,15,47
+Usage (run from project root):
+    python src/clean_pages.py data/ocr/bundy-part-01/pages.jsonl
+    python src/clean_pages.py data/ocr/bundy-part-01/pages.jsonl --detect-only
+    python src/clean_pages.py data/ocr/bundy-part-01/pages.jsonl --pages 4,15,47
 """
 
 import argparse

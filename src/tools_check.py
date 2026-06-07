@@ -7,8 +7,8 @@ Checks, in order:
     3. Poppler is reachable (pdf2image can render a page)
     4. End-to-end OCR works on page 1 of the Bundy PDF
 
-Usage:
-    python tools_check.py
+Usage (run from project root):
+    python src/tools_check.py
 
 If anything fails, the error message tells you exactly what to fix.
 """

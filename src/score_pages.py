@@ -9,9 +9,9 @@ Prints: stats summary + ASCII histograms of confidence and letter ratio
 The threshold lives in your head for now. Once you've picked one, re-run
 with --threshold N to write bucket assignments back to pages.jsonl.
 
-Usage:
-    python score_pages.py data/ocr/bundy-part-01/pages.jsonl
-    python score_pages.py data/ocr/bundy-part-01/pages.jsonl --threshold 55
+Usage (run from project root):
+    python src/score_pages.py data/ocr/bundy-part-01/pages.jsonl
+    python src/score_pages.py data/ocr/bundy-part-01/pages.jsonl --threshold 55
 """
 
 import argparse
