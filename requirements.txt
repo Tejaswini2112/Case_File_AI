@@ -1,0 +1,11 @@
+# --- Phase 1 core ---
+anthropic>=0.40.0        # Claude API client
+pinecone>=5.0.0          # vector DB (note: package is 'pinecone', not 'pinecone-client')
+pymupdf>=1.24.0          # PDF text extraction (imported as 'fitz')
+python-dotenv>=1.0.0     # load API keys from .env
+tiktoken>=0.7.0          # token counting for chunking
+
+# --- OCR (probe.py confirmed bundy-part-01 is a scanned PDF) ---
+pytesseract>=0.3.10      # OCR wrapper — also needs Tesseract installed on your OS
+pdf2image>=1.17.0        # render PDF pages to images for OCR — also needs poppler on PATH
+Pillow>=10.0.0           # image type that pdf2image returns / pytesseract consumes

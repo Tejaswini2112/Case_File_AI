@@ -1,0 +1,28 @@
+# Secrets
+.env
+
+# Raw documents (large PDFs, kept out of git)
+data/raw/*
+!data/raw/.gitkeep
+
+# OCR output (derivative artifacts — regenerate from raw + scripts)
+data/ocr/*
+!data/ocr/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
