@@ -41,18 +41,30 @@ PAGE_CONTINUATION_RE = re.compile(
 )
 
 # Order matters: specific patterns before the generic FD-xxx fallback.
+#
+# PAGE_CONTINUATION_RE is FIRST among the FD-shaped patterns: a teletype
+# continuation page (page 5, page 27, etc.) has the FD-36 form-ID line at
+# the top AND a "PAGE TWO/THREE" header below it. If FD-36 matched first
+# we'd route to handle_fd36, which on a single BT marker assumes the BT is
+# the body-START. On continuation pages the BT is the body-END — body is
+# above it. The wrong handler would delete the body. Detect cont first.
 TEMPLATE_PATTERNS = [
     (re.compile(r"\b4[-.]?\s*750\b"), "4-750"),
+    (PAGE_CONTINUATION_RE, "FD-36-cont"),
     (re.compile(r"\bFD[-.]?\s*36\b(?!\d)"), "FD-36"),
     (re.compile(r"\bFD[-.]?\s*350\b"), "FD-350"),
-    (PAGE_CONTINUATION_RE, "FD-36-cont"),
     (re.compile(r"\bFD[-.]?\s*\d{1,3}\b"), "FD-xxx"),
 ]
 
 
 def detect_template(text: str) -> str:
-    """Look at the first 12 lines for an FBI form number. Returns template name or 'unknown'."""
-    head = "\n".join(text.splitlines()[:12])
+    """Look at the first 20 lines for an FBI form number. Returns template name or 'unknown'.
+
+    20 lines (not 12) so we catch "PAGE TWO" on FD-36 continuation pages — it
+    sits below ~12 lines of form furniture (FD-36 form-ID, transmit checkbox
+    column, classification, dashed separator) before the body header.
+    """
+    head = "\n".join(text.splitlines()[:20])
     for pattern, name in TEMPLATE_PATTERNS:
         if pattern.search(head):
             return name
@@ -76,6 +88,17 @@ DATE_PATTERNS = [
 DOLLAR_PATTERN = re.compile(r"\$\s*\d[\d,]*(?:\.\d+)?")
 CASE_NUMBER_PATTERN = re.compile(r"\b\d{2,3}-\d{4,6}(?:-\d+)?\b")
 
+# Form revision dates ("FD-36 (Rev. 7-27-76)", "Mev. 7-27-76", "Rew. 11-11-75",
+# etc.) — form-ID metadata, NOT case facts. Used by extract_facts (to keep the
+# guardrail from tripping on intentionally-stripped form metadata) and by
+# line_contains_fact (to keep the form-ID line from being protected by its
+# own rev date).
+FORM_REV_DATE_RE = re.compile(
+    r"\(?\s*(?:Rev|Mev|Rew|Rey|Hee|fev|Gev|hev|Lee)\.?,?\s*"
+    r"\d{1,2}[-./]\d{1,2}[-./]\d{2,4}\b\)?",
+    re.IGNORECASE,
+)
+
 # Change #2: also catch parenthesized FOIA exemption forms like (b)(7)(A), (b)(1).
 EXEMPTION_PATTERN = re.compile(
     r"\bb[1-9][A-E]?\b"                                  # bare:        b7C, b3
@@ -91,14 +114,23 @@ def normalize_exemption(s: str) -> str:
 
 
 def extract_facts(text: str) -> dict[str, set[str]]:
-    """Pull dates, dollar amounts, and case file numbers."""
+    """Pull dates, dollar amounts, and case file numbers.
+
+    Form-revision dates ("FD-36 (Rev. 7-27-76)") and GPO printing codes
+    ("GPO : 1977 © - 225-5358") are NOT case facts. Mask them out of the
+    text before extracting, so the guardrail doesn't trip when the cleaner
+    correctly strips them from clean_text.
+    """
+    masked = FORM_REV_DATE_RE.sub(" ", text)
+    masked = re.sub(r"\bGPO\b\s*[:.\s][^\n]*", " ", masked, flags=re.IGNORECASE)
+
     dates: set[str] = set()
     for p in DATE_PATTERNS:
-        dates.update(m.group(0) for m in p.finditer(text))
+        dates.update(m.group(0) for m in p.finditer(masked))
     return {
         "dates": dates,
-        "dollars": {m.group(0) for m in DOLLAR_PATTERN.finditer(text)},
-        "case_numbers": {m.group(0) for m in CASE_NUMBER_PATTERN.finditer(text)},
+        "dollars": {m.group(0) for m in DOLLAR_PATTERN.finditer(masked)},
+        "case_numbers": {m.group(0) for m in CASE_NUMBER_PATTERN.finditer(masked)},
     }
 
 
@@ -168,33 +200,85 @@ def ascii_letter_ratio(s: str) -> float:
 
 
 def line_contains_fact(line: str) -> bool:
-    """True if the line carries a date, dollar amount, or case file number."""
-    if DOLLAR_PATTERN.search(line) or CASE_NUMBER_PATTERN.search(line):
+    """True if the line carries a date, dollar amount, or case file number.
+
+    Excludes two form-furniture cases that would otherwise be falsely protected:
+      - GPO printing-code lines ("GPO : 1977 © - 225-5358") — the 225-5358
+        catalog code matches CASE_NUMBER_PATTERN but isn't case data.
+      - Form revision dates ("FD-36 (Rev. 7-27-76)") — masked before the check.
+    """
+    if re.search(r"\bGPO\b", line, re.IGNORECASE):
+        return False
+    masked = FORM_REV_DATE_RE.sub(" ", line)
+    if DOLLAR_PATTERN.search(masked) or CASE_NUMBER_PATTERN.search(masked):
         return True
-    return any(p.search(line) for p in DATE_PATTERNS)
+    return any(p.search(masked) for p in DATE_PATTERNS)
+
+
+_VOWEL_ONLY_RE = re.compile(r"^[aeiouAEIOU]+$")
+_SHORT_CAPS_RE = re.compile(r"^[A-Z]{2,3}$")
+
+
+def is_horizontal_rule_artifact(line: str) -> bool:
+    """
+    Detect the horizontal dashed separator at the top of teletype body
+    sections that OCR renders as a run of short vowel-only fragments —
+    e.g. 'ae meme ieee ree eee eee ee ee eee eee eee ee eee ee ee'.
+
+    Signal: 6+ tokens, every token ≤4 chars, and at least half are pure
+    vowel sequences ('ee', 'eee', 'ae', 'ieee', etc.).
+    """
+    tokens = line.strip().split()
+    if len(tokens) < 6:
+        return False
+    if not all(len(t) <= 4 for t in tokens):
+        return False
+    vowel_only = sum(1 for t in tokens if _VOWEL_ONLY_RE.fullmatch(t))
+    return vowel_only / len(tokens) >= 0.5
+
+
+def is_bureau_code_column(line: str) -> bool:
+    """
+    Detect the FBI bureau-code column on teletype headers — a row of 2-3
+    letter all-caps abbreviations like 'RR SU AT NK NY PH SF SE DE DN'.
+    These are routing-priority codes per addressee office, not body content.
+
+    Signal: 6+ tokens, ≥70% are 2-3 letter all-caps tokens.
+    """
+    tokens = line.strip().split()
+    if len(tokens) < 6:
+        return False
+    short_caps = sum(1 for t in tokens if _SHORT_CAPS_RE.fullmatch(t))
+    return short_caps / len(tokens) >= 0.7
 
 
 def classify_drop(line: str) -> str | None:
     """
     Decide whether to drop a line. Returns:
-        'orphan' — short stray fragment (1-3 chars with symbols, or meaningless)
-        'soup'   — long-enough line whose letter ratio is below 40% (OCR noise)
-        None     — keep
+        'orphan'        — short stray fragment (1-3 chars with symbols, or meaningless)
+        'soup'          — long-enough line whose letter ratio is below 40%
+        'rule-artifact' — OCR'd horizontal rule rendered as vowel-soup
+        'bureau-codes'  — FBI routing-priority code column
+        None            — keep
     """
     stripped = line.strip()
     if not stripped:
         return None  # blank lines handled by normalize
 
-    # Change #1: PROTECT lines carrying structured case facts. A line like
-    # "11/24/78" alone has 0% letters but is real data — never drop it.
+    # PROTECT lines carrying structured case facts.
     if line_contains_fact(stripped):
         return None
 
     if len(stripped) <= 3:
         if stripped in SHORT_KEEPLIST:
             return None
-        # Anything else this short is almost certainly OCR noise on its own line.
         return "orphan"
+
+    if is_horizontal_rule_artifact(stripped):
+        return "rule-artifact"
+
+    if is_bureau_code_column(stripped):
+        return "bureau-codes"
 
     if ascii_letter_ratio(stripped) < 0.40:
         return "soup"
@@ -203,7 +287,45 @@ def classify_drop(line: str) -> str | None:
 
 
 # Stamps and form furniture that can appear on many template types.
-SEARCHED_STAMP_RE = re.compile(r"\b(?:SEARCHED|SERIALIZED|INDEXED|FILED)\b", re.IGNORECASE)
+#
+# The 4-corner routing stamp ("SEARCHED___ INDEXED___ SERIALIZED___ FILED___")
+# is form furniture. But "FILED" and "SEARCHED" are also common verbs in body
+# prose ("Complaint filed before Magistrate Alsup", "lawmen searched the area").
+# We discriminate by requiring a *stamp-shaped* context: multiple stamp words
+# together, an underscore-blank next to the word, or a near-empty line that's
+# just the keyword surrounded by punctuation.
+STAMP_KEYWORDS = r"SEARCHED|SERIALIZED|SERIALIZEO|INDEXED|FILED"
+STAMP_KEYWORD_RE = re.compile(rf"\b(?:{STAMP_KEYWORDS})\b", re.IGNORECASE)
+# Keyword followed by underscores (with or without intervening whitespace).
+# Note: `\b` after the keyword doesn't fire against `_`, so we don't use it here.
+STAMP_WITH_BLANK_RE = re.compile(rf"\b(?:{STAMP_KEYWORDS})[_\s]*_+", re.IGNORECASE)
+
+
+def is_stamp_line(line: str) -> bool:
+    """True if a line looks like the FBI routing stamp, not body prose."""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    matches = STAMP_KEYWORD_RE.findall(stripped)
+    if not matches:
+        return False
+    # 1. Two or more stamp keywords on one line — the stamp grid collapsed onto a row.
+    if len(matches) >= 2:
+        return True
+    # 2. Stamp keyword followed by an underscore-blank (where date/initials go).
+    if STAMP_WITH_BLANK_RE.search(stripped):
+        return True
+    # 3. Near-empty line: <=3 tokens AND every non-stamp token is non-alphabetic
+    #    (punctuation, digits, OCR symbols). Body prose with "filed" always has
+    #    other real words ("were formally filed", "complaint filed by ...").
+    words = stripped.split()
+    if len(words) <= 3:
+        non_stamp = [w for w in words if not STAMP_KEYWORD_RE.fullmatch(w)]
+        if all(not any(c.isalpha() for c in w) for w in non_stamp):
+            return True
+    return False
+
+
 FD36_HEADER_RE = re.compile(
     r"^\s*(?:FD-?\s*36\b|TRANSMIT VIA|PRECEDENCE|CLASSIFICATION|"
     r"Teletype|Facsimile|Airtel|Immediate|Priority|Routine|"
@@ -221,7 +343,7 @@ def strip_searched_stamp(text: str) -> tuple[str, int]:
     kept: list[str] = []
     removed = 0
     for line in lines:
-        if SEARCHED_STAMP_RE.search(line):
+        if is_stamp_line(line):
             removed += 1
             continue
         kept.append(line)
@@ -279,10 +401,19 @@ FD36_FURNITURE_PATTERNS = [
     # NOTE: dropped "Immediate", "Priority", "Routine", and standalone "SECRET"
     # — these keywords also appear in legitimate routing lines (e.g.
     # "TO DENVER ROUTINE") which the spec says to keep as light provenance.
-    # The remaining keywords each catch every checkbox line on page 4
-    # because each line contains at least one of them.
+    # EFTO appears with various OCR'd prefixes: OEFTO, UEFTO, CIEFTO, OUEF TO
+    # (the space variant happens when OCR splits the letters).
     re.compile(
-        r"^.*\b(?:Teletype|Facsimile|Airtel|TOP\s+SECRET|CONFIDENTIAL|EFTO)\b.*$",
+        r"^.*\b(?:Teletype|Facsimile|Airtel|TOP\s+SECRET|CONFIDENTIAL"
+        r"|[A-Z]{0,3}EFTO|[A-Z]?UEF\s+TO)\b.*$",
+        re.IGNORECASE,
+    ),
+    # FBI logo-box noise at the top of FD-36 forms: a line of short fragments
+    # ending in "FBI" with garbage tokens around it, e.g. ". . Cog OMe FBI \"".
+    # Anchored to ≤6 tokens of ≤4 chars so it doesn't catch body prose like
+    # "AUSA J. McConkie FBI Salt Lake City advised...".
+    re.compile(
+        r"^\s*[\W]*(?:\s*\b[A-Za-z]{1,4}\b\s*[\W]*){0,5}\bFBI\b[\W]*$",
         re.IGNORECASE,
     ),
     # Checkbox-shaped "[x] CLEAR" header — narrowly anchored so we don't strip
@@ -317,19 +448,57 @@ def strip_fd36_furniture(text: str) -> str:
     return "\n".join(kept)
 
 
+# Routing-line provenance: FM/TO/RE lines, all-caps "OFFICE ROUTINE/PRIORITY"
+# destination lines, the SSAN row, and the teletype transmission-date row.
+# These sit ABOVE the BT marker on FD-36 teletypes but carry real provenance
+# (case#, originating office, transmission date) so we keep them on the
+# smart 1-BT fallback path.
+_ROUTING_PROVENANCE_RES = [
+    re.compile(r"^\s*(?:FM|TO|RE)\s+[A-Z]", re.IGNORECASE),
+    re.compile(r"^\s*[A-Z][A-Z\s]{2,}\s+(?:ROUTINE|PRIORITY|IMMEDIATE)\s*$"),
+    re.compile(r"\bSSAN\s+\d{3}", re.IGNORECASE),
+    # Teletype transmission-date line: "Date 1/3/78 =", "Date: 6/9/77"
+    re.compile(r"^\s*Date\s*[:.]?\s*\d{1,2}[-./]\d{1,2}[-./]\d{2,4}\b", re.IGNORECASE),
+]
+
+
+def _is_routing_provenance(line: str) -> bool:
+    return any(p.search(line) for p in _ROUTING_PROVENANCE_RES)
+
+
 def handle_fd36(raw: str) -> tuple[str, str]:
     """
     Preferred: structural cut between the first and last BT markers.
-    Fallback (when BT markers are missing or garbled): pattern-strip the
-    named FD-36 furniture blocks. The safety net catches over-stripping.
 
-    Returns (body, confidence). 'high' = clean structural cut; 'low' = pattern fallback.
+    Single-BT fallback: when only one BT survives OCR (faded ink, marginal
+    scan), treat it as a body-START marker. Everything before BT is form
+    furniture — keep ONLY the routing-provenance lines (FM/TO/RE, all-caps
+    routing destinations, SSAN). Everything after BT is body, but still run
+    it through strip_fd36_furniture to catch the GPO footer and any other
+    leakage.
+
+    Last-resort: pattern-strip the named furniture blocks. The safety net
+    catches over-stripping.
+
+    Returns (body, confidence).
+        'high'   = clean structural cut between two BT markers
+        'medium' = single-BT smart fallback (anchored to one structural cue)
+        'low'    = no BT markers — pattern-strip only
     """
     lines = raw.splitlines()
     bt_indices = [i for i, line in enumerate(lines) if re.search(r"\bBT\b", line)]
+
     if len(bt_indices) >= 2:
         body = lines[bt_indices[0] + 1 : bt_indices[-1]]
         return "\n".join(body), "high"
+
+    if len(bt_indices) == 1:
+        idx = bt_indices[0]
+        provenance = [ln for ln in lines[:idx] if _is_routing_provenance(ln)]
+        body_lines = lines[idx + 1 :]
+        joined = "\n".join(provenance + body_lines)
+        return strip_fd36_furniture(joined), "medium"
+
     return strip_fd36_furniture(raw), "low"
 
 
@@ -460,15 +629,12 @@ def clean_page(page: dict) -> dict:
     body, n_stamps = strip_searched_stamp(body)
 
     kept: list[str] = []
-    n_soup = n_orphan = 0
+    n_dropped = 0
     for line in body.splitlines():
-        reason = classify_drop(line)
-        if reason == "soup":
-            n_soup += 1
-        elif reason == "orphan":
-            n_orphan += 1
-        else:
+        if classify_drop(line) is None:
             kept.append(line)
+        else:
+            n_dropped += 1
     body = "\n".join(kept)
 
     body, n_redactions = label_redactions(body)
@@ -485,7 +651,7 @@ def clean_page(page: dict) -> dict:
             cleaning_flags.append({"type": fact_type, "lost": sorted(lost)})
 
     boilerplate_removed = (
-        (raw_line_count - after_template_cut) + n_soup + n_orphan + n_stamps
+        (raw_line_count - after_template_cut) + n_dropped + n_stamps
     )
 
     return {
