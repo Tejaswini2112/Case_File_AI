@@ -232,11 +232,12 @@ def chunk_doc(sent_pages: list[tuple[str, int]]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def synthesize_deletion_chunk(pages: list[dict]) -> str:
+def synthesize_deletion_chunk(pages: list[dict], source_stem: str) -> str:
     """
-    Build a tiny searchable string for a FOIA 4-750 deletion placeholder.
-    Carries the deletion reference and cited exemptions so 'what was withheld
-    here, and under which exemption?' still has something to retrieve.
+    Build a searchable natural-language description of a FOIA 4-750 deletion
+    placeholder. Written as prose (not a bracketed metadata blob) so the
+    embedding carries real semantic signal — words like "withheld", "exemption",
+    "release" — and questions like "what was redacted in this file?" can match.
     """
     refs: list[str] = []
     exemptions: set[str] = set()
@@ -247,13 +248,20 @@ def synthesize_deletion_chunk(pages: list[dict]) -> str:
         for e in meta.get("exemptions_cited") or []:
             exemptions.add(e)
 
-    parts = ["[FOIA withholding"]
-    parts.append(f"pages={','.join(str(p['page_no']) for p in pages)}")
-    if refs:
-        parts.append(f"reference={'; '.join(refs)}")
+    page_list = ", ".join(str(p["page_no"]) for p in pages)
+    plural = "s" if len(pages) > 1 else ""
+    sentences = [
+        f"FOIA deletion placeholder. Page{plural} {page_list} of the "
+        f"{source_stem} FBI release was withheld and is not available in this release."
+    ]
     if exemptions:
-        parts.append(f"exemptions={','.join(sorted(exemptions))}")
-    return "; ".join(parts) + "]"
+        sentences.append(
+            f"The withholding cites FOIA exemption{'s' if len(exemptions) > 1 else ''} "
+            f"{', '.join(sorted(exemptions))}."
+        )
+    if refs:
+        sentences.append(f"Reference: {'; '.join(refs)}.")
+    return " ".join(sentences)
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +308,7 @@ def build_all_chunks(
         case_nums = doc_summaries.get(doc_id, {}).get("case_nums", [])
 
         if kind == "deletion-sheet":
-            text = synthesize_deletion_chunk(doc_pages)
+            text = synthesize_deletion_chunk(doc_pages, source_stem)
             raw_chunks = [{
                 "text": text,
                 "page_nos": [p["page_no"] for p in doc_pages],
