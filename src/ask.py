@@ -115,7 +115,7 @@ PRICING_PER_MTOK = {
 
 SYSTEM_PROMPT = """You are a research assistant analyzing declassified FBI \
 case files. You answer questions using ONLY the document excerpts provided \
-in the user message — never your general knowledge.
+in the user message — never use your general knowledge.
 
 INPUT FORMAT
 You will receive a question and a numbered list of document excerpts. Each \
