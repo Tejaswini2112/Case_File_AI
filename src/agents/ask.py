@@ -31,16 +31,17 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 from anthropic import Anthropic
 
-# Reuse the validated search function from step 7. Importing it (rather
-# than copying the logic here) keeps a single source of truth for retrieval.
-# The path manipulation makes `from search import ...` work when ask.py is
-# invoked as `python src/ask.py` (cwd = project root, not src/).
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from search import connect_to_index, search
+# Reuse the validated search function from the retrieval package. Importing it
+# (rather than copying the logic here) keeps a single source of truth for
+# retrieval. Putting the repo root on sys.path makes the absolute import work
+# when ask.py is invoked directly as `python src/agents/ask.py` (cwd = root).
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.retrieval.search import connect_to_index, search
 
 sys.stdout.reconfigure(encoding="utf-8")
 

@@ -44,7 +44,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_EVAL_SET = REPO_ROOT / "tests" / "eval_set.jsonl"
-ASK_SCRIPT = REPO_ROOT / "src" / "ask.py"
+ASK_SCRIPT = REPO_ROOT / "src" / "agents" / "ask.py"
 PYTHON_EXE = REPO_ROOT / ".venv" / "Scripts" / "python.exe"
 
 

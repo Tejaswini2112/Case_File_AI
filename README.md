@@ -11,7 +11,7 @@ answers grounded in primary-source documents.
 eval suite.
 
 ```text
-$ python src/ask.py "What evidence was used against Bundy?"
+$ python src/agents/ask.py "What evidence was used against Bundy?"
 
 Physical evidence collected from a 1966 Ford Station Wagon included a
 large clear plastic drinking cup, a Meadow Gold milk carton, a Fig cookie

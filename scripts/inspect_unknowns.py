@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-from src.clean_pages import detect_template
+from src.ingestion.clean_pages import detect_template
 
 
 def main(jsonl_path: Path) -> None:
