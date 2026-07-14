@@ -9,6 +9,10 @@ data/raw/*
 data/ocr/*
 !data/ocr/.gitkeep
 
+# Web-sourced opinions (derivative artifacts — regenerate from raw + scripts)
+data/web/*
+!data/web/.gitkeep
+
 # Python
 __pycache__/
 *.py[cod]
@@ -29,3 +33,4 @@ Desktop.ini
 
 # Claude Code local state (settings.local.json etc.)
 .claude/
+.gstack/
