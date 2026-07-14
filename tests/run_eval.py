@@ -51,10 +51,11 @@ PYTHON_EXE = REPO_ROOT / ".venv" / "Scripts" / "python.exe"
 # Inline-citation regex. Matches:
 #   [bundy-part-01__doc-003, p.6]
 #   [bundy-part-01__doc-003, p.6; p.7]
-#   [bundy-part-01__doc-003, pages 6-7]
-# Captures the doc-id for grounding checks. Tolerant of whitespace.
+#   [bundy-part-01__doc-003, pages 6-7]   (FBI scans)
+#   [bundy-1984-chi-omega, p.334]         (court opinions)
+# Captures the doc-id (either shape) for grounding checks. Tolerant of whitespace.
 CITATION_RE = re.compile(
-    r"\[(bundy-part-\d+__doc-\d+)\s*,\s*p[ages.\s]*\d+",
+    r"\[([a-z0-9][a-z0-9_-]*)\s*,\s*p[ages.\s]*\d+",
     re.IGNORECASE,
 )
 
@@ -105,11 +106,46 @@ def call_ask(question: str, timeout: int = 60) -> dict:
 # ---------------------------------------------------------------------------
 
 
+# A model can refuse two ways: the retrieval gate sets actual["refused"]=True
+# when scores are weak (nonsense, unrelated), OR the model writes a prose refusal
+# even though chunks matched — "the provided documents do not contain...". The
+# second case is the harder, more important one: a confusable question (about
+# Bundy, so chunks score ~0.42) where retrieval LOOKS confident but the chunks
+# don't actually answer. If we only trusted the flag, we'd mark the model as
+# failing when it correctly declined. So we count both as refusals.
+REFUSAL_PHRASES = (
+    "do not contain",
+    "does not contain",
+    "don't contain",
+    "doesn't contain",
+    "no information about",
+    "not in the provided",
+    "cannot answer",
+    "unable to answer",
+)
+
+
+def is_refusal(actual: dict) -> bool:
+    """
+    True if the system refused — via the retrieval flag OR a prose refusal.
+
+    A prose refusal only counts when the answer ALSO has no citations. Otherwise
+    a hedged-but-real answer ("the excerpts do not contain a single comprehensive
+    ruling, but they do refer to [bundy-1989-final, p.447]...") would be misread
+    as a refusal. A genuine refusal cites nothing.
+    """
+    if actual.get("refused"):
+        return True
+    answer = actual.get("answer") or ""
+    has_phrase = any(phrase in answer.lower() for phrase in REFUSAL_PHRASES)
+    has_citation = bool(CITATION_RE.search(answer))
+    return has_phrase and not has_citation
+
+
 def check_refusal_correct(actual: dict, expected_behavior: str) -> bool:
-    """Did the refusal decision match expectation?"""
-    actual_refused = bool(actual.get("refused", False))
+    """Did the refusal decision match expectation? Counts prose refusals too."""
     expected_refused = expected_behavior == "refuse"
-    return actual_refused == expected_refused
+    return is_refusal(actual) == expected_refused
 
 
 def check_top_doc_match(actual: dict, expected_doc_ids: list[str]) -> bool | None:
@@ -128,7 +164,7 @@ def check_top_doc_match(actual: dict, expected_doc_ids: list[str]) -> bool | Non
 
 def check_citations_present(actual: dict) -> bool | None:
     """Are there inline citations in the answer? None = system refused."""
-    if actual.get("refused"):
+    if is_refusal(actual):
         return None
     return bool(CITATION_RE.search(actual.get("answer", "")))
 
@@ -139,7 +175,7 @@ def check_citations_grounded(actual: dict) -> bool | None:
     no citations. False = the model cited at least one doc that wasn't
     actually in its context — i.e. it hallucinated a reference.
     """
-    if actual.get("refused"):
+    if is_refusal(actual):
         return None
     cited = {m.group(1) for m in CITATION_RE.finditer(actual.get("answer", ""))}
     if not cited:
