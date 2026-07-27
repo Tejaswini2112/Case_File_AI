@@ -13,3 +13,7 @@ Pillow>=10.0.0           # image type that pdf2image returns / pytesseract consu
 # --- Web / court-opinion ingestion ---
 httpx>=0.27.0            # HTTP client for the CourtListener API (fetch_opinions.py)
 beautifulsoup4>=4.12.0   # parse opinion HTML in chunk_opinions.py (imported as 'bs4')
+
+# --- Phase 2: HTTP API ---
+fastapi>=0.115.0         # web framework — defines routes, validates via pydantic
+uvicorn[standard]>=0.30.0  # ASGI server that actually runs the app; fastapi only defines it
