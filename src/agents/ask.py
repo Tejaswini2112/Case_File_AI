@@ -172,10 +172,19 @@ def should_refuse(hits: list[dict], threshold: float) -> bool:
     return hits[0]["score"] < threshold
 
 
-def refusal_message(question: str, hits: list[dict]) -> str:
+def refusal_message(
+    question: str,
+    hits: list[dict],
+    threshold: float = REFUSAL_THRESHOLD,
+) -> str:
     """
     User-facing refusal text. Honest about what we looked at and why we
     declined — better UX than a bare "no results."
+
+    `threshold` is a parameter rather than a read of the module constant so
+    the message reports the threshold actually applied. With --threshold the
+    two can differ, and a refusal that quotes the wrong number is worse than
+    one that quotes none.
     """
     if not hits:
         return (
@@ -187,7 +196,7 @@ def refusal_message(question: str, hits: list[dict]) -> str:
         f"The documents I searched do not contain a confident answer to your "
         f"question:\n"
         f"  {question!r}\n\n"
-        f"The closest match (score={top['score']:.3f}, threshold={REFUSAL_THRESHOLD}) "
+        f"The closest match (score={top['score']:.3f}, threshold={threshold}) "
         f"was {top['doc_id']} on page(s) {top['page_nos']}, but it is not strong "
         f"enough to answer from. Try rephrasing, or run search.py to see what is "
         f"available in the corpus."
@@ -304,6 +313,78 @@ def estimate_cost_usd(usage: dict, model: str) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Orchestration — the RAG loop itself
+# ---------------------------------------------------------------------------
+
+
+def answer_question(
+    index,
+    client: Anthropic,
+    question: str,
+    top_k: int = DEFAULT_TOP_K,
+    threshold: float = REFUSAL_THRESHOLD,
+    model: str = DEFAULT_MODEL,
+    doc_kind: str | None = None,
+) -> dict:
+    """
+    Run the full retrieve → decide → generate loop and return a result dict.
+
+    This is the callable core of the system. It takes an already-open Pinecone
+    index and Anthropic client rather than creating them, for two reasons:
+
+      - Connecting is expensive. connect_to_index() makes a live describe_index()
+        call; doing that per question would add a network round-trip to every
+        request. Callers connect once and reuse.
+      - Connecting is fatal on failure. connect_to_index() and
+        connect_to_anthropic() call sys.exit() when credentials are missing —
+        correct for a CLI, catastrophic inside a request handler. Keeping the
+        connect calls at the caller's startup means a server fails at boot
+        (loud, immediate) instead of mid-request (one bad query kills the
+        process).
+
+    Prints nothing. Callers decide how to render — the CLI formats for a
+    terminal, an API serializes to JSON, and both exercise this same path so
+    the eval suite tests what actually runs.
+
+    Returns the shape consumed by print_json() and the eval pipeline:
+        {question, answer, refused, model, hits, usage}
+    """
+    # ---- 1. Retrieve -------------------------------------------------------
+    filter_dict = {"doc_kind": {"$eq": doc_kind}} if doc_kind else None
+    hits = search(index, query_text=question, top_k=top_k, filter=filter_dict)
+
+    # ---- 2. Decide: refuse if retrieval is too weak ------------------------
+    if should_refuse(hits, threshold):
+        return {
+            "question": question,
+            "answer": refusal_message(question, hits, threshold),
+            "refused": True,
+            "model": model,
+            "hits": hits,
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+            "cost_usd": 0.0,
+        }
+
+    # ---- 3. Generate -------------------------------------------------------
+    answer, usage = call_claude(
+        client,
+        user_message=build_user_message(question, hits),
+        model=model,
+        max_tokens=MAX_TOKENS,
+        temperature=TEMPERATURE,
+    )
+    return {
+        "question": question,
+        "answer": answer,
+        "refused": False,
+        "model": model,
+        "hits": hits,
+        "usage": usage,
+        "cost_usd": estimate_cost_usd(usage, model),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
 
@@ -406,50 +487,44 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    # ---- 1. Retrieve ---------------------------------------------------
+    # Connect once, up front. Both connect helpers sys.exit on missing
+    # credentials, so this is where a misconfigured environment fails —
+    # before any work is done, with a message naming the missing key.
     index, _ = connect_to_index()
-    filter_dict = {"doc_kind": {"$eq": args.doc_kind}} if args.doc_kind else None
-    hits = search(
-        index,
-        query_text=args.question,
-        top_k=args.top_k,
-        filter=filter_dict,
-    )
-
-    # ---- 2. Decide: refuse if retrieval is too weak --------------------
-    if should_refuse(hits, args.threshold):
-        message = refusal_message(args.question, hits)
-        if args.json:
-            print_json(
-                question=args.question,
-                answer=message,
-                hits=hits,
-                usage={"input_tokens": 0, "output_tokens": 0},
-                model=args.model,
-                cost_usd=0.0,
-                refused=True,
-            )
-        else:
-            print(f"\nQ: {args.question}\n")
-            print(message)
-        return
-
-    # ---- 3. Generate ---------------------------------------------------
     client = connect_to_anthropic()
-    user_message = build_user_message(args.question, hits)
-    answer, usage = call_claude(
+
+    result = answer_question(
+        index,
         client,
-        user_message=user_message,
+        question=args.question,
+        top_k=args.top_k,
+        threshold=args.threshold,
         model=args.model,
-        max_tokens=MAX_TOKENS,
-        temperature=TEMPERATURE,
+        doc_kind=args.doc_kind,
     )
-    cost = estimate_cost_usd(usage, args.model)
 
     if args.json:
-        print_json(args.question, answer, hits, usage, args.model, cost, refused=False)
+        print_json(
+            question=result["question"],
+            answer=result["answer"],
+            hits=result["hits"],
+            usage=result["usage"],
+            model=result["model"],
+            cost_usd=result["cost_usd"],
+            refused=result["refused"],
+        )
+    elif result["refused"]:
+        print(f"\nQ: {result['question']}\n")
+        print(result["answer"])
     else:
-        print_human(args.question, answer, hits, usage, args.model, cost)
+        print_human(
+            result["question"],
+            result["answer"],
+            result["hits"],
+            result["usage"],
+            result["model"],
+            result["cost_usd"],
+        )
 
 
 if __name__ == "__main__":
