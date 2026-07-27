@@ -9,6 +9,7 @@ the complement to run_eval.py: the eval measures whole-system answer quality
 Run:  pytest tests/test_units.py -v
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -94,3 +95,21 @@ def test_arg_start_patterns():
     assert ARG_START.match("next appellant contends that the testimony ...")
     assert ARG_START.match("bundy's next point on appeal is that ...")
     assert not ARG_START.match("the intruder entered the sorority house.")
+
+
+# 7) The eval set stays well-formed — every line valid JSON with the required
+#    fields, a legal expected_behavior, and no duplicate ids. Guards against a
+#    fat-fingered edit silently breaking the eval suite.
+def test_eval_set_well_formed():
+    path = Path(__file__).resolve().parents[1] / "tests" / "eval_set.jsonl"
+    required = {"id", "question", "category", "expected_behavior", "expected_doc_ids", "rationale"}
+    ids = []
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        entry = json.loads(line)  # raises (test fails) if the line isn't valid JSON
+        assert required <= entry.keys(), f"line {lineno} ({entry.get('id', '?')}) missing {required - entry.keys()}"
+        assert entry["expected_behavior"] in {"answer", "refuse"}, f"line {lineno}: bad expected_behavior"
+        ids.append(entry["id"])
+    assert ids, "eval set is empty"
+    assert len(ids) == len(set(ids)), "duplicate eval ids"
