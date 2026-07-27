@@ -20,6 +20,7 @@ Then:
 """
 
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -40,6 +41,39 @@ from src.agents.ask import (
 # that stops being true.
 MAX_TOP_K = 20
 MAX_QUESTION_CHARS = 1000
+
+# The doc_kind values the corpus actually contains, taken from the chunk files
+# the ingestion pipeline produces.
+#
+# Declaring them closes a trap. doc_kind is a pre-filter: Pinecone applies it
+# before searching, so an unrecognised value matches no chunks and retrieval
+# returns empty. answer_question() then refuses, truthfully but misleadingly —
+# "I could not find any documents matching your question" describes a typo as
+# an empty corpus, and the caller has no way to tell those apart. As a free
+# text field this was easy to hit: Swagger's "Try it out" pre-fills every
+# string box with the placeholder "string", which silently filtered away all
+# 371 chunks.
+#
+# Constrained, a bad kind is a 422 that lists the valid ones, and the generated
+# docs render a dropdown instead of a text box, so the placeholder never
+# appears. The general shape: prefer failing loudly on impossible input over
+# returning a plausible-looking empty result.
+#
+# This list is coupled to the pipeline — a new doc_kind in chunk_documents.py
+# or chunk_opinions.py has to be added here too, or the API will reject a kind
+# the corpus really holds. It is not derived from the data at import time on
+# purpose: data/ocr is gitignored, so nothing here can read the corpus in CI.
+DocKind = Literal[
+    "newspaper",
+    "court-opinion",
+    "loose",
+    "form",
+    "deletion-sheet",
+    "teletype",
+    "legal",
+    "cover",
+    "memo",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -119,9 +153,9 @@ class AskRequest(BaseModel):
         description="Refuse to answer if the top hit scores below this.",
     )
     model: str = Field(DEFAULT_MODEL, description="Anthropic model id.")
-    doc_kind: str | None = Field(
+    doc_kind: DocKind | None = Field(
         None,
-        description="Restrict retrieval to one kind, e.g. teletype, newspaper, court-opinion.",
+        description="Restrict retrieval to one document kind. Omit to search everything.",
     )
 
 

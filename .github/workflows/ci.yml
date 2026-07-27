@@ -36,4 +36,8 @@ jobs:
         run: ruff check src/ tests/
 
       - name: Run unit tests
-        run: pytest tests/test_units.py -v
+        # Whole directory, not a named file, so new test modules are picked up
+        # automatically instead of silently never running. run_eval.py is not
+        # collected despite living here: pytest only gathers files matching
+        # test_*.py, which is what keeps the paid eval out of this job.
+        run: pytest tests/ -v
