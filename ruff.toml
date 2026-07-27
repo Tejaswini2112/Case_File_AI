@@ -1,0 +1,12 @@
+# Ruff config — a focused, high-signal starting rule set.
+#
+#   F         pyflakes: real bugs — unused imports, undefined names, bad f-strings
+#   E4/E7/E9  pycodestyle errors worth enforcing — bad imports, statements, syntax
+#   I         import sorting
+#
+# We deliberately DON'T enable opinionated rules that would fight intentional
+# patterns in this codebase: broad `except Exception` in retry loops (BLE001),
+# `subprocess.run` without check= where we inspect the return code ourselves
+# (PLW1510), and assorted style nits (SIM/PLR/RUF/ISC). Expand the set over time.
+[lint]
+select = ["E4", "E7", "E9", "F", "I"]

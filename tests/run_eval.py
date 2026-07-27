@@ -247,7 +247,7 @@ def run_suite(entries: list[dict]) -> list[dict]:
         try:
             result = run_one(entry)
         except Exception as e:
-            print(f" ERROR")
+            print(" ERROR")
             print(f"    {type(e).__name__}: {e}", file=sys.stderr)
             result = {
                 "id": entry["id"],

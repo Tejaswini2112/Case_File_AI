@@ -33,8 +33,8 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
 from anthropic import Anthropic
+from dotenv import load_dotenv
 
 # Reuse the validated search function from the retrieval package. Importing it
 # (rather than copying the logic here) keeps a single source of truth for

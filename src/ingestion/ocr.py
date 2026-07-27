@@ -20,13 +20,13 @@ import time
 from glob import glob
 from pathlib import Path
 
-# Windows console defaults to cp1252; OCR output contains non-ASCII.
-sys.stdout.reconfigure(encoding="utf-8")
-
 import pytesseract
 from pdf2image import convert_from_path
 from pdf2image.exceptions import PDFInfoNotInstalledError
 from PIL import Image
+
+# Windows console defaults to cp1252; OCR output contains non-ASCII.
+sys.stdout.reconfigure(encoding="utf-8")
 
 # Fallback paths for Windows installs that aren't on PATH (subprocesses often
 # inherit a stale environment). On PATH these are silently ignored.

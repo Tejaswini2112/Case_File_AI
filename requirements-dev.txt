@@ -1,3 +1,4 @@
 # Development / CI dependencies (not needed to run the app).
 # Install with:  pip install -r requirements.txt -r requirements-dev.txt
 pytest>=8.0.0            # unit-test runner for tests/test_units.py
+ruff>=0.6.0              # fast linter — config lives in ruff.toml

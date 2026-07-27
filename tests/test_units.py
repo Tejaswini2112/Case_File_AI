@@ -18,9 +18,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from bs4 import BeautifulSoup
 
-from src.ingestion.chunk_opinions import pack_blocks, block_text_and_pages, ARG_START
 from src.ingestion.chunk_documents import count_tokens, split_sentences
-from tests.run_eval import is_refusal, CITATION_RE
+from src.ingestion.chunk_opinions import ARG_START, block_text_and_pages, pack_blocks
+from tests.run_eval import CITATION_RE, is_refusal
 
 
 def _longest_shared_run(a: str, b: str) -> int:
