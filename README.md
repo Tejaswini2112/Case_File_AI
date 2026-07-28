@@ -188,4 +188,3 @@ Case_File_AI/
 - **Web UI** (Next.js) — replace CLI with streaming chat interface
 - **LangFuse tracing** — observability for every Claude call (cost, latency, faithfulness)
 
-See [`docs/roadmap.md`](docs/roadmap.md) for the full progression and rationale.
