@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+/* The archive palette: warm paper rather than white, ink rather than black,
+   and a single muted highlight for scan annotations. Set as theme variables so
+   Tailwind generates utilities from them (bg-paper, text-ink, and so on) and
+   components never hardcode a hex value. */
+@theme {
+  --color-paper: #f2f1ec;
+  --color-paper-2: #e9e7df;
+  --color-panel: #fbfaf7;
+  --color-ink: #1a1a18;
+  --color-ink-soft: #4a4842;
+  --color-ink-faint: #86837a;
+  --color-rule: #d6d3c8;
+  --color-mark: #d9c56b;
+  --color-redact: #14130f;
+
+  --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-serif);
+  -webkit-font-smoothing: antialiased;
+}
