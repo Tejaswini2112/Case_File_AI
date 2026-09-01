@@ -162,11 +162,17 @@ class AskRequest(BaseModel):
 class Hit(BaseModel):
     """One retrieved chunk, as returned to the client.
 
-    Note what is absent: `text`. The retrieved chunk bodies are in the model's
-    context, not in the response. They are large, they are OCR noise, and the
-    answer already quotes what matters. Callers get enough to verify a citation
-    — which document, which pages, how strong the match — without shipping
-    kilobytes of raw scan text over the wire on every request.
+    `text` is the excerpt the model was actually given, and it is included
+    deliberately. An earlier version withheld it on the grounds that the answer
+    already quoted what mattered and the bodies are bulky OCR noise. That held
+    while the only client was a terminal; it stopped holding once the interface
+    became one whose purpose is showing a reader the source behind each claim.
+    Withholding it would force a second round trip, or a second store of page
+    text alongside Pinecone, to redisplay something retrieval already returned.
+
+    Note what this text is: the chunk, not the page. It is exactly the span the
+    answer was grounded in, which is the more honest thing to show — a full
+    page render would include material the model never saw.
     """
 
     rank: int
@@ -176,6 +182,7 @@ class Hit(BaseModel):
     page_nos: list[int]
     case_nums: list[str]
     score: float
+    text: str
 
 
 class AskResponse(BaseModel):
@@ -266,6 +273,7 @@ def ask(req: AskRequest, request: Request) -> AskResponse:
                 page_nos=h["page_nos"],
                 case_nums=h["case_nums"],
                 score=h["score"],
+                text=h["text"],
             )
             for i, h in enumerate(result["hits"], 1)
         ],

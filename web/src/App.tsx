@@ -1,72 +1,96 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { ApiError, ask, type AskResponse, type Hit } from './api'
+import AskForm from './components/AskForm'
+import Brief from './components/Brief'
+import PageInspector from './components/PageInspector'
 
-type Health = { status: string; index: string }
-
-// Three states rather than two: "checking" is a real state the user can see,
-// and collapsing it into "down" would flash a false error on every load.
-type Probe =
-  | { state: 'checking' }
-  | { state: 'up'; health: Health }
-  | { state: 'down'; reason: string }
+type View =
+  | { state: 'idle' }
+  | { state: 'loading'; question: string }
+  | { state: 'answered'; result: AskResponse; elapsedSeconds: number }
+  | { state: 'error'; message: string }
 
 export default function App() {
-  const [probe, setProbe] = useState<Probe>({ state: 'checking' })
+  const [view, setView] = useState<View>({ state: 'idle' })
+  const [selected, setSelected] = useState<Hit | null>(null)
 
-  useEffect(() => {
-    fetch('/health')
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`API returned HTTP ${res.status}`)
-        setProbe({ state: 'up', health: await res.json() })
+  async function handleAsk(question: string) {
+    setSelected(null)
+    setView({ state: 'loading', question })
+    const started = performance.now()
+    try {
+      const result = await ask(question)
+      setView({
+        state: 'answered',
+        result,
+        elapsedSeconds: (performance.now() - started) / 1000,
       })
-      // A rejected fetch here almost always means uvicorn is not running, so
-      // the message names that rather than reporting a bare network error.
-      .catch((err) => setProbe({ state: 'down', reason: String(err.message ?? err) }))
-  }, [])
+    } catch (err) {
+      setView({
+        state: 'error',
+        message: err instanceof ApiError ? err.message : String(err),
+      })
+    }
+  }
 
   return (
-    <div className="min-h-full flex items-center justify-center p-10">
-      <div className="w-full max-w-lg">
-        <p className="text-xs tracking-wide text-ink-faint mb-2">
-          FBI files on Ted Bundy, released under the Freedom of Information Act
-        </p>
-        <h1 className="text-3xl mb-8">CaseFile AI</h1>
+    <div className="h-full flex">
+      {/* Left: the brief. Scrolls independently so opening a source does not
+          move the reader's place in the answer. */}
+      <div className="flex-1 min-w-0 overflow-y-auto">
+        <div className="max-w-2xl mx-auto px-10 py-12">
+          <p className="text-xs text-ink-faint mb-10">
+            FBI files on Ted Bundy, released under the Freedom of Information Act
+          </p>
 
-        <div className="bg-panel border border-rule rounded p-5">
-          <h2 className="text-xs uppercase tracking-widest text-ink-faint mb-3">
-            Connection
-          </h2>
-
-          {probe.state === 'checking' && (
-            <p className="text-ink-soft">Checking the API&hellip;</p>
-          )}
-
-          {probe.state === 'up' && (
-            <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1 font-mono text-sm">
-              <dt className="text-ink-faint">status</dt>
-              <dd className="text-right">{probe.health.status}</dd>
-              <dt className="text-ink-faint">index</dt>
-              <dd className="text-right">{probe.health.index}</dd>
-            </dl>
-          )}
-
-          {probe.state === 'down' && (
-            <div>
-              <p className="mb-2">Cannot reach the API.</p>
-              <p className="text-sm text-ink-soft mb-3 font-mono">{probe.reason}</p>
-              <p className="text-sm text-ink-soft">
-                Start it with{' '}
-                <code className="font-mono text-xs bg-paper-2 px-1.5 py-0.5 rounded">
-                  .venv\Scripts\python.exe -m uvicorn src.api.app:app
-                </code>
+          {view.state === 'idle' && (
+            <div className="mb-10">
+              <h1 className="text-3xl mb-3">What do these files say?</h1>
+              <p className="text-ink-soft">
+                Every answer is drawn only from the released documents, with each claim
+                traced to the page it came from. Where the files are silent, you will be
+                told so rather than given a guess.
               </p>
             </div>
           )}
-        </div>
 
-        <p className="text-xs text-ink-faint mt-4">
-          Scaffold only &mdash; this page exists to confirm the dev server reaches FastAPI.
-        </p>
+          {view.state === 'loading' && (
+            <div className="mb-10">
+              <h1 className="text-3xl mb-3">{view.question}</h1>
+              <p className="text-ink-soft">Reading the files&hellip;</p>
+            </div>
+          )}
+
+          {view.state === 'error' && (
+            <div className="mb-10">
+              <h1 className="text-3xl mb-3">Something went wrong</h1>
+              <p className="text-ink-soft font-mono text-sm">{view.message}</p>
+            </div>
+          )}
+
+          {view.state === 'answered' && (
+            <div className="mb-10">
+              <Brief
+                result={view.result}
+                elapsedSeconds={view.elapsedSeconds}
+                selectedChunkId={selected?.chunk_id ?? null}
+                onSelect={setSelected}
+              />
+            </div>
+          )}
+
+          <AskForm onAsk={handleAsk} busy={view.state === 'loading'} />
+        </div>
       </div>
+
+      {/* Right: the inspector, present only when there is a source to inspect.
+          Kept out of the tree entirely rather than hidden, so the brief gets
+          the full width until a reader asks to see the evidence. */}
+      {selected && (
+        <div className="w-[46%] max-w-2xl shrink-0">
+          <PageInspector hit={selected} onClose={() => setSelected(null)} />
+        </div>
+      )}
     </div>
   )
 }

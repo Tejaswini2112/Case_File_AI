@@ -218,15 +218,19 @@ def test_answer_returns_expected_shape(client_and_fakes):
     assert hit["page_nos"] == [21]
 
 
-def test_response_omits_chunk_text(client_and_fakes):
-    """Excerpts go to Claude, not back over the wire.
+def test_response_includes_chunk_text(client_and_fakes):
+    """The excerpt comes back with the hit.
 
-    Guards a deliberate choice rather than an accident: chunk bodies are large
-    and full of OCR noise, and the answer already quotes what matters.
+    This reverses an earlier decision to withhold it. That choice was right
+    while the only client was a terminal, where the answer's own quotations
+    were enough. The page inspector exists to show a reader the source behind
+    each claim, so the text is now the point rather than dead weight, and
+    withholding it would only force a second round trip to fetch something
+    retrieval already returned.
     """
     client, _, _ = client_and_fakes
     body = client.post("/ask", json={"question": "x"}).json()
-    assert "text" not in body["hits"][0]
+    assert body["hits"][0]["text"] == "Bundy escaped from the Pitkin County Courthouse."
 
 
 def test_usage_includes_cost_estimate(client_and_fakes):
