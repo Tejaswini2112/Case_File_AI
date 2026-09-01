@@ -35,18 +35,20 @@ export default function App() {
 
   return (
     <div className="h-full flex">
-      {/* Left: the brief. Scrolls independently so opening a source does not
-          move the reader's place in the answer. */}
+      {/* Left: the brief. Scrolls on its own so opening a source does not move
+          the reader's place in the answer. */}
       <div className="flex-1 min-w-0 overflow-y-auto">
         <div className="max-w-2xl mx-auto px-10 py-12">
-          <p className="text-xs text-ink-faint mb-10">
-            FBI files on Ted Bundy, released under the Freedom of Information Act
-          </p>
+          <div className="label-caps pb-4 mb-10 border-b border-ink">
+            FBI files on Ted Bundy &middot; released under the Freedom of Information Act
+          </div>
 
           {view.state === 'idle' && (
-            <div className="mb-10">
-              <h1 className="text-3xl mb-3">What do these files say?</h1>
-              <p className="text-ink-soft">
+            <div className="mb-12">
+              <h1 className="font-serif text-4xl leading-tight mb-5">
+                What do these files say?
+              </h1>
+              <p className="font-serif text-[19px] leading-[1.75] text-ink-soft">
                 Every answer is drawn only from the released documents, with each claim
                 traced to the page it came from. Where the files are silent, you will be
                 told so rather than given a guess.
@@ -55,21 +57,21 @@ export default function App() {
           )}
 
           {view.state === 'loading' && (
-            <div className="mb-10">
-              <h1 className="text-3xl mb-3">{view.question}</h1>
-              <p className="text-ink-soft">Reading the files&hellip;</p>
+            <div className="mb-12">
+              <h1 className="font-serif text-4xl leading-tight mb-5">{view.question}</h1>
+              <p className="text-ink-faint text-sm">Reading the files&hellip;</p>
             </div>
           )}
 
           {view.state === 'error' && (
-            <div className="mb-10">
-              <h1 className="text-3xl mb-3">Something went wrong</h1>
-              <p className="text-ink-soft font-mono text-sm">{view.message}</p>
+            <div className="mb-12">
+              <h1 className="font-serif text-4xl leading-tight mb-5">Something went wrong</h1>
+              <p className="font-mono text-sm text-mark">{view.message}</p>
             </div>
           )}
 
           {view.state === 'answered' && (
-            <div className="mb-10">
+            <div className="mb-12">
               <Brief
                 result={view.result}
                 elapsedSeconds={view.elapsedSeconds}
@@ -83,9 +85,8 @@ export default function App() {
         </div>
       </div>
 
-      {/* Right: the inspector, present only when there is a source to inspect.
-          Kept out of the tree entirely rather than hidden, so the brief gets
-          the full width until a reader asks to see the evidence. */}
+      {/* Right: the inspector, mounted only when there is a source to inspect,
+          so the brief keeps full width until a reader asks for the evidence. */}
       {selected && (
         <div className="w-[46%] max-w-2xl shrink-0">
           <PageInspector hit={selected} onClose={() => setSelected(null)} />

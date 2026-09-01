@@ -4,7 +4,18 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>web</title>
+    <title>CaseFile AI — FBI files on Ted Bundy</title>
+    <!-- A grotesk for interface and an editorial serif for the writing. Linked
+         here rather than @import-ed from CSS: a CSS import must precede every
+         other rule (Tailwind's output lands first) and it serialises the
+         request behind the stylesheet, so the fonts arrive later. preconnect
+         opens the connection to the font host while the CSS is still parsing. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap"
+      rel="stylesheet"
+    />
   </head>
   <body>
     <div id="root"></div>

@@ -7,9 +7,9 @@ type Props = {
   onSelect: (hit: Hit) => void
 }
 
-/** Find the hit a citation points at. Citations name a document and page, but
- *  a document can span several chunks, so the page narrows it; if nothing
- *  matches on page we fall back to the document's best-ranked chunk. */
+/** Resolve a citation to the chunk it names. A document can span several
+ *  chunks, so the page narrows it; failing that, fall back to the document's
+ *  best-ranked chunk. */
 function resolveCitation(hits: Hit[], docId: string, page: number | null): Hit | undefined {
   const inDoc = hits.filter((h) => h.doc_id === docId)
   if (!inDoc.length) return undefined
@@ -28,11 +28,11 @@ function Meta({ result, elapsedSeconds }: { result: AskResponse; elapsedSeconds:
     ['Time', `${elapsedSeconds.toFixed(1)}s`],
   ]
   return (
-    <div className="flex flex-wrap gap-x-12 gap-y-4 pt-6 mt-8 border-t border-rule">
+    <div className="flex flex-wrap gap-x-14 gap-y-5 pt-6 mt-10 border-t border-rule">
       {cells.map(([label, value]) => (
         <div key={label}>
-          <div className="text-xs text-ink-faint">{label}</div>
-          <div className="font-mono text-sm mt-0.5">{value}</div>
+          <div className="label-caps">{label}</div>
+          <div className="font-mono text-sm mt-1.5">{value}</div>
         </div>
       ))}
     </div>
@@ -43,12 +43,14 @@ export default function Brief({ result, elapsedSeconds, selectedChunkId, onSelec
   if (result.refused) {
     return (
       <div>
-        <h1 className="text-3xl mb-6">{result.question}</h1>
-        <div className="bg-paper-2 border border-rule rounded p-5 mb-2">
-          <h2 className="text-sm mb-2">These files cannot answer that</h2>
-          <p className="text-ink-soft leading-relaxed whitespace-pre-wrap">{result.answer}</p>
+        <h1 className="font-serif text-4xl leading-tight mb-7">{result.question}</h1>
+        <div className="border-l-2 border-mark bg-mark-soft px-5 py-4 mb-3">
+          <div className="label-caps mb-2">These files cannot answer that</div>
+          <p className="font-serif text-ink-soft leading-relaxed whitespace-pre-wrap">
+            {result.answer}
+          </p>
         </div>
-        <p className="text-sm text-ink-faint">
+        <p className="text-[13px] text-ink-faint">
           The system declined rather than guess. That is the intended behaviour, not a failure.
         </p>
         <Meta result={result} elapsedSeconds={elapsedSeconds} />
@@ -57,18 +59,16 @@ export default function Brief({ result, elapsedSeconds, selectedChunkId, onSelec
   }
 
   const segments = parseAnswer(result.answer)
-  const citedDocs = new Set(
-    segments.flatMap((s) => (s.kind === 'cite' ? [s.docId] : [])),
-  )
+  const citedDocs = new Set(segments.flatMap((s) => (s.kind === 'cite' ? [s.docId] : [])))
 
   return (
     <div>
-      <h1 className="text-3xl mb-4">{result.question}</h1>
-      <p className="text-sm text-ink-soft mb-8">
+      <h1 className="font-serif text-4xl leading-tight mb-4">{result.question}</h1>
+      <p className="text-[13px] text-ink-faint mb-9 pb-6 border-b border-rule">
         Answered only from these files. Click any citation or source to read the page it came from.
       </p>
 
-      <div className="text-lg leading-relaxed whitespace-pre-wrap mb-10">
+      <div className="font-serif text-[19px] leading-[1.75] whitespace-pre-wrap mb-11">
         {segments.map((seg, i) => {
           if (seg.kind === 'text') return <span key={i}>{seg.text}</span>
           const hit = resolveCitation(result.hits, seg.docId, seg.page)
@@ -78,8 +78,8 @@ export default function Brief({ result, elapsedSeconds, selectedChunkId, onSelec
               key={i}
               onClick={() => onSelect(hit)}
               title={`Open ${hit.doc_id}`}
-              className="align-baseline text-xs font-mono px-1 py-0.5 mx-0.5 rounded
-                         border border-rule bg-panel text-ink-soft hover:border-ink-faint hover:text-ink"
+              className="align-baseline font-sans text-[11px] text-mark mx-0.5
+                         border-b border-rule hover:border-mark"
             >
               {seg.text}
             </button>
@@ -87,30 +87,27 @@ export default function Brief({ result, elapsedSeconds, selectedChunkId, onSelec
         })}
       </div>
 
-      <h2 className="text-xs uppercase tracking-widest text-ink-faint mb-3">
-        Sources retrieved
-      </h2>
-      <div className="space-y-1.5">
+      <div className="label-caps mb-3">Sources retrieved</div>
+      <div className="border-t border-rule">
         {result.hits.map((hit) => {
           const selected = hit.chunk_id === selectedChunkId
-          // A retrieved chunk is not necessarily a used one: retrieval returns
-          // the top k, and the model cites what actually supported the answer.
-          // Marking the difference is more honest than implying all five were used.
+          // Retrieval returns the top k; the model cites what actually supported
+          // the answer. Marking the difference avoids overstating the evidence.
           const cited = hit.doc_id !== null && citedDocs.has(hit.doc_id)
           return (
             <button
               key={hit.chunk_id}
               onClick={() => onSelect(hit)}
-              className={`w-full text-left flex items-baseline gap-3 border rounded px-3 py-2
-                          hover:border-ink-faint ${
-                            selected ? 'border-ink-faint bg-paper-2' : 'border-rule bg-panel'
-                          }`}
+              className={`w-full text-left flex items-baseline gap-4 px-3 py-2.5
+                          border-b border-rule hover:bg-paper-2
+                          ${selected ? 'bg-paper-2 border-l-2 border-l-mark' : ''}`}
             >
-              <span className="font-mono text-xs text-ink-faint">{hit.rank}</span>
+              <span className="font-mono text-[11px] text-ink-faint w-3">{hit.rank}</span>
               <span className="text-sm">{hit.doc_id}</span>
-              <span className="ml-auto text-xs text-ink-faint font-mono">
-                {cited && <span className="mr-3 not-italic">cited</span>}
-                p.{hit.page_nos.join(',') || '?'} &middot; {hit.score.toFixed(2)}
+              <span className="ml-auto flex items-baseline gap-4 text-[11px] font-mono text-ink-faint">
+                {cited && <span className="text-mark">cited</span>}
+                <span>p.{hit.page_nos.join(',') || '?'}</span>
+                <span className="w-8 text-right">{hit.score.toFixed(2)}</span>
               </span>
             </button>
           )

@@ -1,21 +1,27 @@
 @import "tailwindcss";
 
-/* The archive palette: warm paper rather than white, ink rather than black,
-   and a single muted highlight for scan annotations. Set as theme variables so
-   Tailwind generates utilities from them (bg-paper, text-ink, and so on) and
-   components never hardcode a hex value. */
 @theme {
-  --color-paper: #f2f1ec;
-  --color-paper-2: #e9e7df;
-  --color-panel: #fbfaf7;
-  --color-ink: #1a1a18;
-  --color-ink-soft: #4a4842;
-  --color-ink-faint: #86837a;
-  --color-rule: #d6d3c8;
-  --color-mark: #d9c56b;
-  --color-redact: #14130f;
+  /* Near-white rather than white: pure #fff under a large serif reads as glare,
+     and the hairline rules need somewhere to sit. */
+  --color-paper: #fbfbfa;
+  --color-paper-2: #f2f2f0;
+  --color-panel: #ffffff;
 
-  --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --color-ink: #111111;
+  --color-ink-soft: #3a3a38;
+  --color-ink-faint: #6e6e6a;
+  --color-rule: #dcdcd8;
+
+  /* One accent, used only for things that point at a source: citations, the
+     refusal cut-off marker, the active state. Reserving it means a red mark on
+     this page always means "look here for the evidence". */
+  --color-mark: #b3261e;
+  --color-mark-soft: #f6e9e8;
+
+  --color-redact: #111111;
+
+  --font-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-serif: "Source Serif 4", Charter, "Iowan Old Style", Georgia, serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
@@ -26,6 +32,18 @@ html, body, #root {
 body {
   background: var(--color-paper);
   color: var(--color-ink);
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Small uppercase section labels — the newspaper standfirst device. Defined
+   once here because it appears in both panes and in three components. */
+@utility label-caps {
+  font-family: var(--font-sans);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-ink-faint);
 }
