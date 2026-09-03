@@ -29,6 +29,8 @@ import re
 import sys
 import time
 from collections.abc import Iterator
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from glob import glob
 from pathlib import Path
 
@@ -37,8 +39,11 @@ from pdf2image import convert_from_path, pdfinfo_from_path
 from pdf2image.exceptions import PDFInfoNotInstalledError
 from PIL import Image
 
-# Windows console defaults to cp1252; OCR output contains non-ASCII.
+# Windows console defaults to cp1252; OCR output contains non-ASCII. stderr
+# needs it too — sys.exit messages go there, and an em-dash in one of them
+# renders as mojibake without this.
 sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
 
 # Fallback paths for Windows installs that aren't on PATH (subprocesses often
 # inherit a stale environment). On PATH these are silently ignored.
@@ -58,6 +63,13 @@ DPI = 300
 # Read size for hashing the source PDF. Hashing happens once per run, not per
 # page, so this only needs to avoid loading a large PDF into memory whole.
 HASH_CHUNK = 1 << 20
+
+# Default worker count. Half the logical cores rather than all of them: the
+# reported count includes hyperthreads, which do not scale like real cores on
+# CPU-bound work, and leaving headroom keeps the machine usable during a long
+# ingest. Override with --workers; the scaling curve is in
+# docs/ingestion-scaling.md.
+DEFAULT_WORKERS = max(1, (os.cpu_count() or 2) // 2)
 
 # FOIA exemption codes commonly stamped on FBI Vault releases:
 # b1 (national security), b3 (statutory), b6 (personal privacy),
@@ -312,7 +324,144 @@ def assemble_jsonl(out_dir: Path, jsonl_path: Path, total: int, fingerprint: str
     return len(rows)
 
 
-def main(pdf_path: Path, force: bool = False) -> None:
+# ---------------------------------------------------------------------------
+# Doing the work — one page, and many pages across processes
+# ---------------------------------------------------------------------------
+
+
+def process_page(
+    page_no: int,
+    image: Image.Image,
+    pdf_path: Path,
+    out_dir: Path,
+    fingerprint: str,
+) -> dict:
+    """OCR one rendered page and durably record it. Returns its pages.jsonl row.
+
+    Shared by the sequential and parallel paths so there is one definition of
+    what finishing a page means, rather than two that can drift.
+    """
+    text, confidence = ocr_page(image)
+    txt_path = out_dir / f"page_{page_no:03d}.txt"
+
+    # Text first, then the sidecar that vouches for it. In this order a crash
+    # between the two leaves an orphan text file, which the next run simply
+    # overwrites. The reverse order would leave a sidecar claiming a page is
+    # finished when its text file does not exist.
+    atomic_write_text(txt_path, text)
+    row = build_row(page_no, pdf_path, txt_path, text, confidence)
+    write_sidecar(out_dir, page_no, row, fingerprint)
+    return row
+
+
+def _worker_init() -> None:
+    """Prepare a pool worker.
+
+    OMP_THREAD_LIMIT is the important line. Tesseract is built with OpenMP and
+    will spin up its own threads per invocation, so N worker processes each
+    running a multi-threaded Tesseract oversubscribes the CPU badly — the
+    processes spend their time contending rather than working, and the parallel
+    run can finish slower than the sequential one. Capping each worker to a
+    single thread leaves this program as the only thing deciding how much
+    parallelism to use.
+
+    The variable is read by the tesseract binary that pytesseract spawns, which
+    inherits this process's environment, so setting it here is enough.
+    """
+    os.environ["OMP_THREAD_LIMIT"] = "1"
+    ensure_tesseract()
+
+
+def _ocr_task(task: tuple[str, str | None, str, str, list[int]]) -> list[dict]:
+    """Render and OCR one small group of pages inside a worker process.
+
+    Takes plain strings and ints rather than Path objects because every argument
+    is pickled to reach the worker. Returns rows rather than printing: several
+    processes writing to one console interleave into nonsense, so progress is
+    reported by the parent as results arrive.
+
+    Each task renders its own pages. The alternative — rendering centrally and
+    shipping images to workers — would pickle a ~25 MB image per page across a
+    process boundary, which costs more than the OCR it parallelises.
+    """
+    pdf_str, poppler_path, out_str, fingerprint, pages = task
+    pdf_path, out_dir = Path(pdf_str), Path(out_str)
+
+    rows = []
+    wanted = set(pages)
+    for page_no, image in iter_pages(
+        pdf_path, poppler_path, max(pages), wanted, batch_size=len(pages)
+    ):
+        rows.append(process_page(page_no, image, pdf_path, out_dir, fingerprint))
+    return rows
+
+
+def plan_tasks(pages: list[int], batch_size: int) -> list[list[int]]:
+    """Split the pages still to do into render-sized groups.
+
+    Groups are the unit of scheduling as well as of rendering: many small tasks
+    load-balance better than one big slice per worker, because a worker that
+    draws a run of sparse pages finishes early and picks up more instead of
+    idling while others grind.
+    """
+    return [pages[i : i + batch_size] for i in range(0, len(pages), batch_size)]
+
+
+def run_parallel(
+    pdf_path: Path,
+    poppler_path: str | None,
+    out_dir: Path,
+    fingerprint: str,
+    pages: list[int],
+    total: int,
+    workers: int,
+    batch_size: int,
+) -> None:
+    """OCR the given pages across a pool of processes."""
+    tasks = [
+        (str(pdf_path), poppler_path, str(out_dir), fingerprint, group)
+        for group in plan_tasks(pages, batch_size)
+    ]
+
+    done = 0
+    with ProcessPoolExecutor(max_workers=workers, initializer=_worker_init) as pool:
+        futures = [pool.submit(_ocr_task, task) for task in tasks]
+        for future in as_completed(futures):
+            for row in future.result():
+                done += 1
+                print(
+                    f"  [{done:>3}/{len(pages)}] page {row['page_no']:>3}/{total}  "
+                    f"chars={row['char_count']:>5}  conf={row['ocr_confidence']:>5.1f}  "
+                    f"letters={row['letter_ratio']:>4.0%}  "
+                    f"redactions={len(row['redaction_markers_found'])}"
+                )
+
+
+def run_sequential(
+    pdf_path: Path,
+    poppler_path: str | None,
+    out_dir: Path,
+    fingerprint: str,
+    wanted: set[int],
+    total: int,
+) -> None:
+    """OCR the wanted pages in this process, in page order.
+
+    Kept as a separate path rather than a one-worker pool: it avoids process
+    startup and pickling entirely, and it is the honest baseline the parallel
+    numbers are measured against.
+    """
+    for page_no, image in iter_pages(pdf_path, poppler_path, total, wanted):
+        row = process_page(page_no, image, pdf_path, out_dir, fingerprint)
+        print(
+            f"  page {page_no:>3}/{total}  "
+            f"chars={row['char_count']:>5}  conf={row['ocr_confidence']:>5.1f}  "
+            f"letters={row['letter_ratio']:>4.0%}  "
+            f"redactions={len(row['redaction_markers_found'])}"
+        )
+
+
+def main(pdf_path: Path, force: bool = False, workers: int = 1) -> None:
     if not pdf_path.exists():
         sys.exit(f"Not found: {pdf_path}")
 
@@ -335,7 +484,17 @@ def main(pdf_path: Path, force: bool = False) -> None:
         }
 
     done = total - len(wanted)
-    print(f"{pdf_path.name}: {total} pages at {DPI} dpi, {RENDER_BATCH} per render batch")
+
+    # Peak memory is roughly workers x batch_size x 25 MB, so the per-worker
+    # batch shrinks as workers grow. Without this, twelve workers each holding
+    # ten rendered pages would reach ~3 GB and undo the streaming work that got
+    # a single run down to 356 MB. The floor of 2 keeps some amortisation of the
+    # poppler spawn each render call pays for.
+    batch_size = max(2, RENDER_BATCH // workers) if workers > 1 else RENDER_BATCH
+
+    print(f"{pdf_path.name}: {total} pages at {DPI} dpi, {batch_size} per render batch")
+    if workers > 1:
+        print(f"  {workers} workers")
     if force:
         print(f"  --force: redoing all {total} pages")
     elif done:
@@ -346,25 +505,32 @@ def main(pdf_path: Path, force: bool = False) -> None:
     # rendered a batch at a time as OCR consumes them, so there is one timer for
     # the whole pass rather than a render figure and an OCR figure.
     t1 = time.time()
-    for i, image in iter_pages(pdf_path, poppler_path, total, wanted):
-        text, confidence = ocr_page(image)
-        txt_path = out_dir / f"page_{i:03d}.txt"
-
-        # Text first, then the sidecar that vouches for it. In this order a
-        # crash between the two leaves an orphan text file, which the next run
-        # simply overwrites. The reverse order would leave a sidecar claiming a
-        # page is finished when its text file does not exist.
-        atomic_write_text(txt_path, text)
-        row = build_row(i, pdf_path, txt_path, text, confidence)
-        write_sidecar(out_dir, i, row, fingerprint)
-
-        print(
-            f"  page {i:>3}/{total}  "
-            f"chars={len(text):>5}  conf={confidence:>5.1f}  "
-            f"letters={row['letter_ratio']:>4.0%}  "
-            f"redactions={len(row['redaction_markers_found'])}"
+    try:
+        if workers > 1 and len(wanted) > 1:
+            run_parallel(
+                pdf_path, poppler_path, out_dir, fingerprint,
+                sorted(wanted), total, workers, batch_size,
+            )
+        else:
+            run_sequential(pdf_path, poppler_path, out_dir, fingerprint, wanted, total)
+    except (BrokenProcessPool, KeyboardInterrupt) as exc:
+        # Both mean the run stopped early: a worker was killed (task manager,
+        # the OOM killer, a machine going to sleep), or someone pressed Ctrl-C.
+        # Neither is a bug worth a stack trace, and neither loses work — pages
+        # that finished have their sidecar and are skipped next time.
+        #
+        # pages.jsonl is deliberately not assembled here. A partial one would
+        # look complete to every downstream stage, which is worse than none.
+        reason = "A worker process was killed" if isinstance(exc, BrokenProcessPool) else "Interrupted"
+        sys.exit(
+            f"\n{reason}. Pages finished so far are saved — "
+            f"re-run the same command to continue from where it stopped."
         )
 
+    # Assembled here, in the parent, after every worker has finished. Rows are
+    # ordered by page number rather than by completion, so output does not
+    # depend on which worker finished first — the reason parallelism needed no
+    # new coordination beyond this.
     written = assemble_jsonl(out_dir, jsonl_path, total, fingerprint)
 
     print("-" * 72)
@@ -383,5 +549,14 @@ if __name__ == "__main__":
         action="store_true",
         help="Re-OCR every page, ignoring finished work from previous runs",
     )
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_WORKERS,
+        help=f"Processes to OCR with (default: {DEFAULT_WORKERS}). 1 runs in "
+             f"this process with no pool at all.",
+    )
     args = ap.parse_args()
-    main(args.pdf, force=args.force)
+    if args.workers < 1:
+        sys.exit("--workers must be at least 1")
+    main(args.pdf, force=args.force, workers=args.workers)
