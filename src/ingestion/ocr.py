@@ -17,11 +17,12 @@ import json
 import re
 import sys
 import time
+from collections.abc import Iterator
 from glob import glob
 from pathlib import Path
 
 import pytesseract
-from pdf2image import convert_from_path
+from pdf2image import convert_from_path, pdfinfo_from_path
 from pdf2image.exceptions import PDFInfoNotInstalledError
 from PIL import Image
 
@@ -32,6 +33,12 @@ sys.stdout.reconfigure(encoding="utf-8")
 # inherit a stale environment). On PATH these are silently ignored.
 TESSERACT_FALLBACK = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 POPPLER_FALLBACK_GLOB = r"C:\Program Files\poppler\poppler-*\Library\bin"
+
+# How many pages to render per poppler call. This is the memory dial: peak
+# usage is roughly batch_size x one rendered page (~25 MB at 300 dpi), so 10
+# pages costs ~250 MB regardless of how long the document is. Raising it buys
+# slightly less poppler overhead at proportionally more memory.
+RENDER_BATCH = 10
 
 # 300 dpi is the standard sweet spot for typewritten text OCR.
 # Higher = better quality but slower; lower = faster but error-prone on fine print.
@@ -59,11 +66,58 @@ def find_poppler_bin() -> str | None:
     return matches[0] if matches else None
 
 
-def render_pages(pdf_path: Path, poppler_path: str | None) -> list[Image.Image]:
+def count_pages(pdf_path: Path, poppler_path: str | None) -> int:
+    """Page count without rendering anything — pdfinfo reads the PDF's own
+    structure. Needed up front now that the renderer no longer materialises a
+    list we could take len() of."""
     try:
-        return convert_from_path(str(pdf_path), dpi=DPI, poppler_path=poppler_path)
+        return int(pdfinfo_from_path(str(pdf_path), poppler_path=poppler_path)["Pages"])
     except PDFInfoNotInstalledError:
         sys.exit("Poppler not found. Run tools_check.py for help.")
+
+
+def iter_pages(
+    pdf_path: Path,
+    poppler_path: str | None,
+    total: int,
+    batch_size: int = RENDER_BATCH,
+) -> Iterator[tuple[int, Image.Image]]:
+    """Yield (page_no, image) one page at a time, rendering in small batches.
+
+    This replaces a single convert_from_path() over the whole PDF. That call
+    returned every page as a list, so peak memory was the entire document —
+    measured at 2.7 GB for a 60-page file at 300 dpi, and linear in page count,
+    which put a 1000-page release far beyond any laptop.
+
+    Rendering in batches makes peak memory a function of batch_size instead of
+    document length: a 10,000-page file costs the same as a 10-page one. Each
+    batch is released before the next is rendered, because nothing holds a
+    reference to it once its pages have been yielded and consumed.
+
+    Batches rather than single pages because every convert_from_path call spawns
+    poppler and re-reads the PDF's structure. Page-at-a-time would pay that cost
+    once per page; ten at a time amortises it while still bounding memory.
+    """
+    for start in range(1, total + 1, batch_size):
+        end = min(start + batch_size - 1, total)
+        try:
+            batch = convert_from_path(
+                str(pdf_path),
+                dpi=DPI,
+                poppler_path=poppler_path,
+                first_page=start,
+                last_page=end,
+            )
+        except PDFInfoNotInstalledError:
+            sys.exit("Poppler not found. Run tools_check.py for help.")
+
+        for offset, image in enumerate(batch):
+            yield start + offset, image
+
+        # Drop the batch's last strong reference before rendering the next one.
+        # Without this the previous batch stays alive across the loop boundary
+        # while the next is being rendered, doubling the peak.
+        del batch
 
 
 def ocr_page(image: Image.Image) -> tuple[str, float]:
@@ -117,15 +171,16 @@ def main(pdf_path: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     jsonl_path = out_dir / "pages.jsonl"
 
-    print(f"Rendering {pdf_path.name} at {DPI} dpi...")
-    t0 = time.time()
-    images = render_pages(pdf_path, poppler_path)
-    print(f"Rendered {len(images)} pages in {time.time() - t0:.1f}s. Starting OCR...")
+    total = count_pages(pdf_path, poppler_path)
+    print(f"{pdf_path.name}: {total} pages at {DPI} dpi, {RENDER_BATCH} per render batch")
     print("-" * 72)
 
+    # Rendering is no longer a phase that finishes before OCR starts — pages are
+    # rendered a batch at a time as OCR consumes them, so there is one timer for
+    # the whole pass rather than a render figure and an OCR figure.
     t1 = time.time()
     with jsonl_path.open("w", encoding="utf-8") as jf:
-        for i, image in enumerate(images, start=1):
+        for i, image in iter_pages(pdf_path, poppler_path, total):
             text, confidence = ocr_page(image)
             ratio = letter_ratio(text)
             markers = find_redaction_markers(text)
@@ -146,14 +201,14 @@ def main(pdf_path: Path) -> None:
             jf.write(json.dumps(row, ensure_ascii=False) + "\n")
 
             print(
-                f"  page {i:>3}/{len(images)}  "
+                f"  page {i:>3}/{total}  "
                 f"chars={len(text):>5}  conf={confidence:>5.1f}  "
                 f"letters={ratio:>4.0%}  redactions={len(markers)}"
             )
 
     print("-" * 72)
-    print(f"OCR done in {time.time() - t1:.1f}s.")
-    print(f"Wrote {len(images)} text files + {jsonl_path}")
+    print(f"Render + OCR done in {time.time() - t1:.1f}s.")
+    print(f"Wrote {total} text files + {jsonl_path}")
     print(f"Next: python score_pages.py {jsonl_path}")
 
 
