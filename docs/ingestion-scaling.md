@@ -341,3 +341,136 @@ Copy-Item data\raw\bundy-part-02.pdf data\raw\casefile-bench.pdf
 
 To see resumption, interrupt the first run with Ctrl-C partway and start it
 again — it reports how many pages are already done and continues from there.
+
+---
+
+## 3. Using more than one processor
+
+*September 2026 · `src/ingestion/ocr.py` · commit `2cf8b76`*
+
+### The problem, plainly
+
+This machine has twelve processors. OCR used one. The other eleven sat idle
+for the entire run.
+
+Picture twelve photocopiers in a room, and one person feeding pages into a
+single machine while the other eleven stay switched off.
+
+The work is a good fit for spreading out, because **no page needs any other
+page**. Page 5 does not depend on page 4 in any way. They only happened one
+after another because that is how the program was written, not because they
+have to.
+
+### What it actually gained
+
+```
+1 worker     134.6 s
+8 workers     56.5 s      2.4x faster
+```
+
+**This is less than expected.** The estimate beforehand was four to six times
+faster. It came out at 2.4. Recorded here rather than quietly rounded up,
+because the gap between the guess and the measurement is the useful part.
+
+### The surprise worth knowing about
+
+Running more copies does not keep making it faster. Past a point it makes it
+slower:
+
+| workers | time | versus one worker |
+|--------:|-----:|------------------:|
+| 1 | 188.8 s | — |
+| 2 | 106.7 s | 1.8x |
+| 4 | 68.1 s | 2.8x |
+| 8 | **51.6 s** | **3.7x** ← best |
+| 12 | 74.4 s | 2.5x ← slower than 4 |
+
+(These were taken while also measuring memory, which slows everything down a
+little. The shape is what matters; the honest times are the two above.)
+
+**Twelve is worse than four.** The machine reports twelve processors, but that
+is really about six, each pretending to be two. Push past what is actually
+there and the copies spend their time queueing for a turn instead of working.
+
+The obvious setting — "use every processor" — would have made ingestion slower
+than necessary, and nothing would have revealed it. This is the entire argument
+for measuring rather than assuming. The default is now half the reported
+processors, which sits safely on the good part of the curve, and `--workers`
+overrides it.
+
+### Two things that would have spoiled it
+
+**Memory comes back.** The earlier streaming change got one run down to
+356 MB by holding only ten pages at a time. But that was one worker. Twelve
+workers each holding ten pages would need around 3 GB — undoing the earlier
+work entirely.
+
+Each photocopier needs its own desk space for the stack it is working through.
+Twelve machines means twelve stacks in the room.
+
+So the stack each worker holds shrinks as the number of workers grows.
+
+**Everyone hires assistants.** This is the one that catches people out. The OCR
+software already tries to use several processors by itself. So starting twelve
+copies means each one quietly spins up its own helpers, and suddenly forty-odd
+things are competing for twelve processors. They spend longer taking turns than
+working, and the parallel version can finish *slower* than the single one.
+
+Twelve people in a room that fits twelve, each hiring three assistants.
+Everybody is elbowing everybody.
+
+The fix is to tell each copy to use exactly one processor, and let this program
+be the only thing deciding how much to run at once. One decision-maker, not two.
+
+### Why the results stay correct
+
+Workers finish in whatever order they happen to finish. Page 40 may be done
+before page 12.
+
+Normally that is a problem — results arriving out of order. Here it is not,
+because of the previous change: `pages.jsonl` is built from the per-page records
+at the end, **sorted by page number**. Which worker finished first makes no
+difference to what comes out.
+
+That is the payoff for making pages independent before trying to run them in
+parallel. This step needed almost no new coordination, because the previous one
+had already removed the need for it.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| 8-worker output vs single-worker output | byte-identical — `pages.jsonl` and all 60 text files |
+| Eight workers killed mid-run | clear message, no crash dump, no half-written files, 20 finished pages kept |
+| Resuming that killed run | output identical to a clean single-worker run |
+
+The first is the important one. Spreading work across processors must not change
+a single character of the result, and it does not.
+
+### Two smaller fixes
+
+Killing the workers used to print a wall of red error text. It now prints one
+sentence saying what happened and that finished pages are safe. It also
+deliberately does **not** write `pages.jsonl` when a run stops early — a partial
+one would look complete to every later stage, which is worse than having none.
+
+Error messages are now printed in the same character encoding as normal output.
+A dash in one message had been coming out as garbled characters on Windows.
+
+### What this does not fix
+
+Ingestion still handles one PDF per command, and the scoring stage still needs a
+person to pick a quality threshold for each file. Fine for three documents;
+the bottleneck at a hundred.
+
+### Reproducing
+
+```powershell
+Copy-Item data\raw\bundy-part-02.pdf data\raw\casefile-bench.pdf
+.venv\Scripts\python.exe src\ingestion\ocr.py data\raw\casefile-bench.pdf --force --workers 1
+.venv\Scripts\python.exe src\ingestion\ocr.py data\raw\casefile-bench.pdf --force --workers 8
+```
+
+Times vary by roughly ten percent between runs, so a single pair of numbers is
+an observation rather than a fact. The shape of the curve held across every
+attempt.
