@@ -191,3 +191,153 @@ Measure-Command { .venv\Scripts\python.exe src\ingestion\ocr.py data\raw\casefil
 
 Watch `python.exe` in Task Manager's Details tab for the memory figure. Output
 lands in `data/ocr/casefile-bench/`, leaving real corpus data alone.
+
+---
+
+## 2. Resumable OCR
+
+*September 2026 · `src/ingestion/ocr.py` · commit `4be8fe5`*
+
+### The problem, plainly
+
+If OCR stopped halfway through a document, it started again from page one.
+
+Imagine photocopying a thousand pages. The copier jams at page 900 — and then
+makes you start again from page 1. That was the behaviour. At 2.3 seconds a
+page, a thousand-page file takes about forty minutes, so a failure at minute
+thirty-eight cost all of it.
+
+It worked that way because the first thing the program did was empty its own
+output file and begin afresh. It had no memory of previous runs by design.
+
+### The reason this matters more than it sounds
+
+Resuming after a crash is the obvious benefit. It is not the important one.
+
+The next change parallelises OCR: instead of one worker processing pages 1, 2,
+3 in order, several workers each take a page. Eight workers need a checklist on
+the wall — without one, two of them photocopy page 40 and nobody photocopies
+page 41. And when a worker stops halfway through a page, everyone needs to know
+that page is not finished.
+
+The record of what is already done *is* that checklist. So this change is not
+really about crash recovery. It is about turning **one page** into a unit of
+work that anyone can pick up, and that is safe to redo if it goes wrong.
+
+### What "safe to redo" means
+
+The technical word is *idempotent*: doing something twice gives the same result
+as doing it once.
+
+- **"Set the light switch to ON"** — do it twice, still on. Safe to repeat, and
+  you never need to know whether someone already did it.
+- **"Add one to the counter"** — do it twice and you get 2 instead of 1. You
+  must know whether it already happened.
+
+OCR-ing a page is naturally the first kind: *read page 42, save the text to
+`page_042.txt`*. Run it a hundred times and the file is the same.
+
+But the old code had the second kind hidden in it. Each page's result was
+**appended as a line** to one shared `pages.jsonl`. Run page 42 twice and the
+file grows two rows for page 42.
+
+This matters because when work fails, you usually do not know how far it got.
+Did it finish page 42 or not? If every piece is safe to repeat, you do not have
+to know — you just run it again.
+
+### Three traps
+
+**1. A file existing does not mean it is finished.**
+
+If the process dies *while writing* `page_042.txt`, the file exists but is
+truncated. Any "does this file exist?" check says done, and the run carries on
+with silently corrupt text. Nothing raises an error.
+
+The photocopier jamming mid-page leaves paper in the output tray. "Is there a
+page in the tray?" says yes. Only the top half is printed.
+
+The fix is to not put it in the tray until it is finished: write the text under
+a temporary name, then rename it. The operating system guarantees a rename
+either happens or does not — never halfway — so the real filename never names a
+partial file.
+
+**2. One shared file cannot take many writers.**
+
+Every page appending to a single `pages.jsonl` is a problem twice over: a crash
+mid-line leaves an unparseable row, and several workers writing at once have
+nothing to serialise on.
+
+So each page now writes its **own** small record, and `pages.jsonl` is assembled
+from those records at the end. Workers never touch the same file.
+
+**3. Cached results can go stale.**
+
+Re-render at a different resolution, or replace the source PDF, and the stored
+text is wrong but still sitting on disk. Each record therefore notes what it was
+made from, and is only reused while that still matches.
+
+### What changed
+
+- Each page writes a `page_NNN.json` sidecar holding its row plus a
+  **fingerprint** of the inputs that produced it — a content hash of the source
+  PDF plus the DPI. A hash rather than a timestamp because copying a file
+  changes its modification time without changing what OCR would produce, and
+  file sizes collide too easily. Hashed once per run, not per page.
+- Text files and sidecars are written to a temporary name and renamed.
+- Text is written **before** its sidecar. A crash between the two leaves an
+  orphan text file that the next run simply overwrites. The reverse order would
+  leave a sidecar vouching for a page whose text does not exist.
+- `pages.jsonl` is assembled from the sidecars once all pages are present.
+- A page counts as done only if its sidecar parses, its fingerprint matches, and
+  its text file exists. **Any doubt redoes the page** — redoing costs seconds,
+  while trusting a bad record corrupts the corpus.
+- Render batches containing no unfinished page are never rendered at all, so a
+  resumed run skips rendering as well as OCR. Rendering is roughly 40% of the
+  per-page cost.
+- `--force` ignores all of it and redoes everything.
+
+### Verification
+
+Four checks, on the same 60-page benchmark file:
+
+| Check | Result |
+|---|---|
+| Fresh run vs. the pre-change output | `pages.jsonl` and all 60 text files byte-identical |
+| Running twice | 140.4 s → **0.4 s**, zero pages processed |
+| Killed at page 19, then resumed | Output identical to an uninterrupted run; no leftover `.tmp` files; no `pages.jsonl` until the end |
+| Sidecar kept, text file deleted | That page alone redone, and rebuilt byte-identical |
+
+The third is the one that matters. It proves an interrupted run and a clean run
+produce the same corpus, which is the whole claim.
+
+### Result
+
+```
+first run     140.4 s     60 pages processed
+second run      0.4 s      0 pages processed
+resumed run    100.0 s    41 pages processed  (killed after 19)
+```
+
+Wall-clock time for a *first* run is unchanged, as expected — this step does no
+less work the first time through. What changed is that work already done is
+never repeated, and a page became something that can be handed out, retried, or
+picked up by a different worker.
+
+### What this does not fix
+
+Still single-threaded at ~2.3 s/page. Resumability makes parallelism *safe*; it
+does not make anything faster on its own. That is the next step.
+
+Ingestion also still takes one PDF per invocation, and `score` still needs a
+human to choose a threshold per file.
+
+### Reproducing
+
+```powershell
+Copy-Item data\raw\bundy-part-02.pdf data\raw\casefile-bench.pdf
+.venv\Scripts\python.exe src\ingestion\ocr.py data\raw\casefile-bench.pdf   # ~140 s
+.venv\Scripts\python.exe src\ingestion\ocr.py data\raw\casefile-bench.pdf   # ~0.4 s
+```
+
+To see resumption, interrupt the first run with Ctrl-C partway and start it
+again — it reports how many pages are already done and continues from there.
