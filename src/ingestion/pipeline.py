@@ -42,12 +42,27 @@ def main() -> None:
     ap.add_argument("pdf", type=Path, help="Path to the source PDF, e.g. data/raw/bundy-part-02.pdf")
     ap.add_argument("--from", dest="start", help="Resume from a stage (e.g. clean)")
     ap.add_argument(
+        "--until",
+        dest="stop",
+        help="Stop after this stage (e.g. chunk). Mainly to run ingestion "
+             "without the embed stage, which writes to the live Pinecone index "
+             "-- useful when testing the pipeline itself rather than adding "
+             "documents to the corpus.",
+    )
+    ap.add_argument(
         "--threshold",
         type=float,
         default=None,
         help="OCR-confidence cut for the score stage. Omit it and the pipeline "
              "stops after score so you can eyeball the distribution first; pass "
              "it (e.g. --threshold 60) to score AND continue through embed.",
+    )
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="OCR worker processes. Forwarded to ocr.py; omit to use its own "
+             "default (half the machine's logical cores).",
     )
     ap.add_argument("--dry-run", action="store_true", help="Print the steps without running them")
     args = ap.parse_args()
@@ -65,10 +80,17 @@ def main() -> None:
     if args.threshold is not None:
         score_cmd += ["--threshold", str(args.threshold)]
 
+    # ocr.py picks its own worker count unless told otherwise, so the flag is
+    # only forwarded when explicitly set. Passing its default through here
+    # would duplicate the choice in two places.
+    ocr_cmd = [ING / "ocr.py", args.pdf]
+    if args.workers is not None:
+        ocr_cmd += ["--workers", str(args.workers)]
+
     # The relay: each stage is just (name, the exact command to run).
     stages = [
         ("probe",  [ING / "probe.py",           args.pdf]),
-        ("ocr",    [ING / "ocr.py",             args.pdf]),
+        ("ocr",    ocr_cmd),
         ("score",  score_cmd),
         ("clean",  [ING / "clean_pages.py",     pages]),
         ("group",  [ING / "group_documents.py", pages]),
@@ -82,6 +104,12 @@ def main() -> None:
         if args.start not in names:
             sys.exit(f"Unknown stage '{args.start}'. Choose from: {', '.join(names)}")
         stages = stages[names.index(args.start):]
+
+    if args.stop:
+        names = [name for name, _ in stages]
+        if args.stop not in names:
+            sys.exit(f"Unknown stage '{args.stop}'. Choose from: {', '.join(names)}")
+        stages = stages[: names.index(args.stop) + 1]
 
     for i, (name, cmd) in enumerate(stages, 1):
         printable = " ".join(str(c) for c in cmd)

@@ -1,0 +1,291 @@
+"""
+Ingest a folder of PDFs in one command.
+
+The pipeline handles exactly one PDF per invocation, which is fine for three
+documents and impossible for a hundred: you would run a hundred commands, and
+the fourth failing would leave the remaining ninety-six untouched.
+
+    python -m src.ingestion.batch data/raw/ --threshold 60 --workers 8
+    python -m src.ingestion.batch data/raw/ --threshold 60 --dry-run
+
+Each PDF runs through the existing pipeline as a subprocess. That boundary is
+the point: a corrupt file that kills the interpreter, or a segfault inside
+poppler, takes down one file rather than the batch. Failure isolation comes
+from the process boundary rather than from exceptions someone had to predict.
+
+Progress is one line per file. Per-page detail goes to
+data/ocr/<stem>/ingest.log, because fifty files of page-by-page output is
+thousands of lines nobody reads.
+"""
+
+import argparse
+import json
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+from pdf2image import pdfinfo_from_path
+
+from src.ingestion.ocr import find_poppler_bin, source_fingerprint
+
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+STATE_PATH = REPO_ROOT / "data" / "ocr" / "batch-state.json"
+
+# Measured on this corpus at 300 dpi: ~2.3 s per page single-threaded, and
+# about 2.4x faster on 8 workers rather than 8x. Used only for the --dry-run
+# estimate, so it needs to be roughly right rather than exact.
+SECONDS_PER_PAGE = 2.3
+PARALLEL_EFFICIENCY = 0.3
+
+
+@dataclass
+class Job:
+    pdf: Path
+    pages: int
+    fingerprint: str
+
+
+def discover(paths: list[Path]) -> list[Path]:
+    """Expand folders into the PDFs inside them, leaving explicit files alone."""
+    found: list[Path] = []
+    for path in paths:
+        if path.is_dir():
+            found.extend(sorted(path.glob("*.pdf")))
+        elif path.suffix.lower() == ".pdf":
+            found.append(path)
+        else:
+            print(f"  skipping {path} (not a PDF or folder)")
+    return found
+
+
+def load_state() -> dict:
+    if not STATE_PATH.exists():
+        return {}
+    try:
+        return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        # A damaged state file must not stop a run. The cost of losing it is
+        # redoing work that is itself idempotent, so treating it as empty is
+        # safe; refusing to start would not be.
+        print("  warning: batch-state.json unreadable, treating as empty")
+        return {}
+
+
+def save_state(state: dict) -> None:
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = STATE_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    tmp.replace(STATE_PATH)
+
+
+def is_complete(state: dict, job: Job) -> bool:
+    """True when this exact PDF finished a previous run and its output survives.
+
+    Three conditions rather than one. The recorded status could be stale, the
+    fingerprint catches a file replaced since, and the chunks file catches
+    output deleted by hand. Any doubt re-runs the file, which is cheap because
+    OCR itself skips finished pages.
+    """
+    entry = state.get(job.pdf.name)
+    if not entry or entry.get("status") != "ok":
+        return False
+    if entry.get("fingerprint") != job.fingerprint:
+        return False
+    return (REPO_ROOT / "data" / "ocr" / job.pdf.stem / "chunks.jsonl").exists()
+
+
+def build_jobs(
+    pdfs: list[Path], poppler_path: str | None
+) -> tuple[list[Job], list[tuple[Path, str]]]:
+    """Read page counts and fingerprints without rendering anything.
+
+    Returns the readable files as jobs and the unreadable ones separately.
+    Unreadable files are failures, not absences: dropping them silently would
+    let a batch where half the folder is corrupt report a clean success and
+    exit zero, which is exactly the outcome a scheduled run must not produce.
+    Catching them here rather than at OCR time also means a bad file is named
+    in the first second rather than forty minutes in.
+    """
+    jobs: list[Job] = []
+    unreadable: list[tuple[Path, str]] = []
+    for pdf in pdfs:
+        try:
+            pages = int(pdfinfo_from_path(str(pdf), poppler_path=poppler_path)["Pages"])
+        except Exception as exc:
+            # Poppler writes its own parse errors to stderr, which are noisy and
+            # already visible; the first line of the exception is the useful part.
+            reason = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+            unreadable.append((pdf, reason))
+            continue
+        jobs.append(Job(pdf=pdf, pages=pages, fingerprint=source_fingerprint(pdf)))
+    return jobs, unreadable
+
+
+def estimate_seconds(pages: int, workers: int) -> float:
+    """Rough wall-clock estimate for the dry run.
+
+    Parallel speedup is nowhere near linear — 8 workers measured 2.4x, not 8x —
+    so the efficiency factor is deliberately pessimistic. An estimate that runs
+    under is more useful than one that runs over.
+    """
+    if workers <= 1:
+        return pages * SECONDS_PER_PAGE
+    return pages * SECONDS_PER_PAGE / (1 + (workers - 1) * PARALLEL_EFFICIENCY)
+
+
+def human_time(seconds: float) -> str:
+    if seconds < 90:
+        return f"{seconds:.0f}s"
+    minutes = seconds / 60
+    if minutes < 90:
+        return f"{minutes:.0f}m"
+    return f"{minutes / 60:.1f}h"
+
+
+def run_one(job: Job, threshold: float, workers: int, until: str | None) -> tuple[bool, str]:
+    """Run the full pipeline for one PDF. Returns (succeeded, detail).
+
+    Output is redirected to a per-file log rather than the console: at batch
+    scale the page-by-page detail is thousands of lines, and it is only wanted
+    when something failed.
+    """
+    log_dir = REPO_ROOT / "data" / "ocr" / job.pdf.stem
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "ingest.log"
+
+    cmd = [
+        sys.executable, "-m", "src.ingestion.pipeline", str(job.pdf),
+        "--threshold", str(threshold),
+        "--workers", str(workers),
+    ]
+    if until:
+        cmd += ["--until", until]
+    with log_path.open("w", encoding="utf-8") as log:
+        result = subprocess.run(cmd, cwd=REPO_ROOT, stdout=log, stderr=subprocess.STDOUT)
+
+    if result.returncode == 0:
+        return True, ""
+    return False, f"exit {result.returncode}, see {log_path.relative_to(REPO_ROOT)}"
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Ingest a folder of PDFs.")
+    ap.add_argument("paths", nargs="+", type=Path, help="PDF files or folders of PDFs")
+    ap.add_argument(
+        "--threshold",
+        type=float,
+        required=True,
+        help="OCR-confidence cut for the score stage. Required in batch mode: "
+             "without it the pipeline pauses for a human to inspect each file's "
+             "distribution, which does not scale past a handful of documents.",
+    )
+    ap.add_argument("--workers", type=int, default=None, help="OCR workers per file")
+    ap.add_argument(
+        "--until",
+        help="Stop each file after this stage. Passed through to the pipeline; "
+             "use --until chunk to ingest without writing to the live index.",
+    )
+    ap.add_argument("--dry-run", action="store_true", help="Show the plan without running")
+    args = ap.parse_args()
+
+    pdfs = discover(args.paths)
+    if not pdfs:
+        sys.exit("No PDFs found.")
+
+    poppler_path = find_poppler_bin()
+    jobs, unreadable = build_jobs(pdfs, poppler_path)
+    for pdf, reason in unreadable:
+        print(f"  cannot read {pdf.name}: {reason}")
+    if not jobs:
+        sys.exit("No readable PDFs found.")
+
+    state = load_state()
+    todo = [j for j in jobs if not is_complete(state, j)]
+    skipped = len(jobs) - len(todo)
+
+    # Largest first. If the longest document runs last, everything else finishes
+    # and the batch waits on it alone; starting it first overlaps it with the
+    # short ones. Free — it is a sort order.
+    todo.sort(key=lambda j: j.pages, reverse=True)
+
+    workers = args.workers or 1
+    pages_todo = sum(j.pages for j in todo)
+
+    print(f"{len(jobs)} files, {sum(j.pages for j in jobs):,} pages")
+    print(f"  already done : {skipped} files")
+    print(f"  to process   : {len(todo)} files, {pages_todo:,} pages")
+    if todo:
+        print(f"  estimated    : ~{human_time(estimate_seconds(pages_todo, workers))}"
+              f" at {workers} worker{'s' if workers != 1 else ''}")
+
+    if args.dry_run:
+        print("\n(dry run — nothing executed)")
+        for job in todo:
+            print(f"  would process  {job.pdf.name:<34} {job.pages:>5} pages")
+        return
+
+    if not todo:
+        print("\nNothing to do.")
+        # Unreadable files still have to be reported and still have to fail the
+        # run. Returning success here would mean a nightly batch whose only
+        # remaining problem is a permanently corrupt file reports clean forever.
+        if unreadable:
+            print(f"  failed    : {len(unreadable)}")
+            for pdf, reason in unreadable:
+                print(f"    {pdf.name}  —  unreadable: {reason}")
+            sys.exit(1)
+        return
+
+    print("-" * 72)
+    started = time.time()
+    succeeded, failed = [], []
+
+    for i, job in enumerate(todo, 1):
+        label = f"[{i}/{len(todo)}] {job.pdf.name:<34} {job.pages:>5}p"
+        print(f"{label}  running...", flush=True)
+
+        t0 = time.time()
+        ok, detail = run_one(job, args.threshold, workers, args.until)
+        elapsed = time.time() - t0
+
+        state[job.pdf.name] = {
+            "status": "ok" if ok else "failed",
+            "fingerprint": job.fingerprint,
+            "pages": job.pages,
+            "seconds": round(elapsed, 1),
+            "detail": detail,
+        }
+        # Saved after every file, not at the end. A batch killed halfway must
+        # still know what it finished.
+        save_state(state)
+
+        if ok:
+            succeeded.append(job)
+            print(f"{label}  ok in {human_time(elapsed)}")
+        else:
+            failed.append((job, detail))
+            print(f"{label}  FAILED — {detail}")
+
+    print("-" * 72)
+    print(f"Done in {human_time(time.time() - started)}.")
+    print(f"  succeeded : {len(succeeded)}")
+    print(f"  skipped   : {skipped}  (already complete)")
+    print(f"  failed    : {len(failed) + len(unreadable)}")
+    for job, detail in failed:
+        print(f"    {job.pdf.name}  —  {detail}")
+    for pdf, reason in unreadable:
+        print(f"    {pdf.name}  —  unreadable: {reason}")
+
+    # Non-zero exit when anything failed, so a scheduled or scripted run is not
+    # reported as a success because most of it worked.
+    if failed or unreadable:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
