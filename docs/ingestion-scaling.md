@@ -474,3 +474,212 @@ Copy-Item data\raw\bundy-part-02.pdf data\raw\casefile-bench.pdf
 Times vary by roughly ten percent between runs, so a single pair of numbers is
 an observation rather than a fact. The shape of the curve held across every
 attempt.
+
+---
+
+## 4. Ingesting a folder instead of a file
+
+*September 2026 · `src/ingestion/batch.py` · commit `b8803fb`*
+
+### The problem, plainly
+
+Ingesting a document was one command. Ingesting a hundred documents was a
+hundred commands, typed one at a time, each waiting for the last to finish.
+
+Worse, the first failure ended everything. Start a run before going to bed,
+and if the fourth file is corrupt you come back to three files done and
+ninety-six never attempted.
+
+### Why this is not just a loop
+
+A loop is one line of shell. The reason it needed to be a real program is what
+happens when things go wrong — and across a hundred files, something always
+does.
+
+**A broken file must not stop the rest.** Each document now runs in its own
+separate process. If one crashes outright, it takes itself down and nothing
+else. That isolation comes from the separation itself rather than from trying
+to predict every way a document can fail.
+
+**You need to know what happened.** After two hours you want a summary, not
+thousands of lines to scroll back through. Each document's detailed output goes
+to its own log file, and the screen shows one line per document.
+
+**It should skip what is already done.** Drop ten new files into the folder,
+re-run, and it processes ten — not all hundred and ten.
+
+**Biggest first.** If the longest document runs last, everything else finishes
+and the batch sits waiting on it alone. Starting it first overlaps it with the
+short ones. This costs nothing — it is a sort order.
+
+**Say what it will do before doing it.** A dry run prints "12 files, 3,204
+pages, roughly 12 minutes" so a mistake is caught before an afternoon is spent
+on it.
+
+### What a run looks like
+
+```
+[1/3] alpha.pdf      4p  ok in 11s
+[2/3] gamma.pdf      3p  ok in 18s
+[3/3] beta.pdf       2p  FAILED — see data/ocr/beta/ingest.log
+
+Done in 46s.
+  ingested  : 2
+  skipped   : 0
+  failed    : 1
+```
+
+### Two bugs found while testing, both the same shape
+
+Both were **a failing run reporting success**, which is the worst kind of bug
+in something you leave running overnight.
+
+A corrupt file is spotted early, when the program reads how many pages each
+document has. Because it never became a job, it never appeared in the failure
+count — so a folder where half the files were corrupt would have reported zero
+failures.
+
+The second was worse. Once everything else was finished, the program returned
+early and never reached the part that reports failures at all. A nightly run
+whose only remaining problem was one permanently broken file would have
+reported clean **forever**.
+
+Both now count as failures, and the run reports failure to whatever started it.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| Dry run | matched what the real run did, biggest file first |
+| One corrupt file among three good ones | corrupt one named, other three completed |
+| Re-running | all three finished files skipped |
+| Every file forced to fail partway | ran through all of them, recorded each with its log |
+| Reported success or failure correctly | yes, including when the only problem left was a corrupt file |
+
+### One thing this needed
+
+The pipeline's final stage writes to the live search index. Testing the batch
+driver would therefore have pushed duplicate test documents into the real
+corpus — the same corpus the quality evaluation is scored against.
+
+So a way to stop before that stage was added. It is useful beyond testing:
+sometimes you want to prepare documents without publishing them.
+
+### What this does not fix
+
+Every file still got the same quality threshold, and that threshold still had
+to be chosen by a person. Making it compulsory forced the decision rather than
+making it. That is the next entry.
+
+---
+
+## 5. Deciding quality without a person
+
+*September 2026 · `src/ingestion/score_pages.py` · commit `7d931df`*
+
+### The problem, plainly
+
+One stage needed a human. After reading a document, the program showed how
+clearly each page had scanned, and someone had to look at that spread and
+choose a cut-off: below this, a page is too garbled to be worth keeping.
+
+Sensible for three documents. Impossible for a hundred.
+
+### Does one cut-off work for every file?
+
+The obvious worry is that different documents need different cut-offs. For this
+corpus, they do not:
+
+| file | pages | discarded | typical page |
+|---|---:|---:|---:|
+| bundy-part-01 | 85 | 24% | 76.8 |
+| bundy-part-02 | 60 | 25% | 72.0 |
+| bundy-part-03 | 194 | 20% | 80.0 |
+
+Nearly identical. But notice **why**: all three are releases of the same case,
+scanned by the same people on the same equipment in the same era. One cut-off
+works because they share a history, not because one number is universally
+right.
+
+It would stop working for a batch scanned on better equipment, or for modern
+documents mixed in with old scans. And there is a genuinely dangerous case: if
+a document's typical page scores below the cut-off, nearly all of it is thrown
+away — and nothing says so. The file "succeeds" with almost nothing in it.
+
+### Why not a different cut-off per file
+
+Tempting, and wrong.
+
+The cut-off is an **absolute** standard: text this garbled is not worth keeping,
+regardless of what else is in the document. Making it relative — *keep the best
+80% of each file* — would rank pages instead of judging them. A uniformly
+terrible scan would keep its least-terrible pages, still unreadable. A pristine
+one would throw away good pages for no reason.
+
+So the standard stays fixed. What varies is whether we **trust** it for a
+particular document.
+
+### What changed
+
+Two checks now run automatically, neither of which needs to know anything about
+other files:
+
+- more than **half** the pages discarded
+- the **typical** page falling below the cut-off
+
+The 50% figure comes from the table above. A fifth is normal for this corpus, so
+half means something is genuinely different about the document rather than
+slightly rougher.
+
+### A third answer was needed
+
+Until now a file either worked or failed. A document whose scan does not fit the
+cut-off is neither — nothing is broken, but it must not be added to the search
+index without someone looking.
+
+So there are three outcomes:
+
+```
+ingested     : 47
+skipped      :  3   (already done)
+needs review :  2
+    release-14.pdf  —  71% of pages below the cut-off
+    release-22.pdf  —  typical page scores 48.3, below the cut-off
+failed       :  1
+```
+
+**The check happens before anything is published, not after.** A held document
+stops at the scoring stage, so nothing about it reaches the search index. That
+is deliberate: checking afterwards would mean finding the bad material already
+mixed into the corpus and having to pick it back out.
+
+The human judgement has not been removed. It is now only asked for on the
+documents where the automatic answer cannot be trusted.
+
+### The override, and its one limit
+
+A held file can be forced through, for when you have looked and decided it is
+fine. The check is a speed bump, not a wall.
+
+But it cannot force through a file where **every** page was discarded. That is
+not a matter of judgement — there is simply nothing to add.
+
+This was found by testing the override. Forcing such a file through made it fail
+three stages later with a confusing message about missing fields, nowhere near
+the real cause. It now says plainly that there is nothing to ingest.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| Normal cut-off | both test files ingested, checks silent |
+| Deliberately impossible cut-off | both held, with reasons given, nothing published |
+| Override on a merely poor file | ingested |
+| Override on a file with nothing usable | still held, with a message naming the real problem |
+| Existing corpus | all three real files pass, checked without altering them |
+
+### What this does not fix
+
+It does not choose a better cut-off for you. It uses the one you give and tells
+you when that number looks wrong for a particular document. Choosing
+automatically is a larger question, and flagging is more honest than guessing.
