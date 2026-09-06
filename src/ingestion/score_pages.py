@@ -1,7 +1,7 @@
 """
 Step 2 — Look at the per-page OCR score distribution and pick a threshold.
 
-Reads:  data/ocr/<name>/pages.jsonl   (produced by ocr.py)
+Reads:  data/cases/<case>/ocr/<name>/pages.jsonl   (produced by ocr.py)
 Prints: stats summary + ASCII histograms of confidence and letter ratio
         + a list of pages that sit near common threshold candidates
         (for spot-checking before committing to a cut).
@@ -10,8 +10,8 @@ The threshold lives in your head for now. Once you've picked one, re-run
 with --threshold N to write bucket assignments back to pages.jsonl.
 
 Usage (run from project root):
-    python src/score_pages.py data/ocr/bundy-part-01/pages.jsonl
-    python src/score_pages.py data/ocr/bundy-part-01/pages.jsonl --threshold 55
+    python src/score_pages.py data/cases/bundy/ocr/bundy-part-01/pages.jsonl
+    python src/score_pages.py data/cases/bundy/ocr/bundy-part-01/pages.jsonl --threshold 55
 """
 
 import argparse

@@ -24,9 +24,9 @@ The 7 design decisions from the learning module are annotated inline at the
 places they show up in the code.
 
 Usage:
-    python src/embed_chunks.py data/ocr/bundy-part-01/chunks.jsonl
-    python src/embed_chunks.py data/ocr/bundy-part-01/chunks.jsonl --dry-run
-    python src/embed_chunks.py data/ocr/bundy-part-01/chunks.jsonl --recreate
+    python src/embed_chunks.py data/cases/bundy/ocr/bundy-part-01/chunks.jsonl
+    python src/embed_chunks.py data/cases/bundy/ocr/bundy-part-01/chunks.jsonl --dry-run
+    python src/embed_chunks.py data/cases/bundy/ocr/bundy-part-01/chunks.jsonl --recreate
 """
 
 import argparse

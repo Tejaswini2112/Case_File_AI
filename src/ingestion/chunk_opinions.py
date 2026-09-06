@@ -22,8 +22,7 @@ Output is chunks.jsonl in the SAME schema embed_chunks.py expects, so the
 existing embed step loads it unchanged.
 
 Usage (run from project root):
-    python -m src.ingestion.chunk_opinions data/raw/opinions/bundy-1984-chi-omega.json
-    python -m src.ingestion.chunk_opinions data/raw/opinions/bundy-1984-chi-omega.json --dry-run
+    python -m src.ingestion.chunk_opinions \n        data/cases/bundy/raw/opinions/bundy-1984-chi-omega.json --case bundy
 """
 
 import argparse
@@ -39,6 +38,7 @@ from bs4 import BeautifulSoup, NavigableString
 # sys.path before importing anything under src. Same approach as ask.py.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from src import paths
 from src.cases import validate as validate_case
 
 # Reuse the FBI chunker's token estimator so chunk sizes are measured the same
@@ -48,7 +48,6 @@ from src.ingestion.chunk_documents import count_tokens
 sys.stdout.reconfigure(encoding="utf-8")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-WEB_DIR = REPO_ROOT / "data" / "web"
 
 # A topic at or under this size stays whole; above it we split at paragraphs.
 WHOLE_SECTION_MAX = 600
@@ -232,7 +231,7 @@ def pick_citation(cluster: dict) -> tuple[str, int]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Topic-aware chunker for court opinions.")
-    ap.add_argument("raw_json", type=Path, help="data/raw/opinions/<slug>.json")
+    ap.add_argument("raw_json", type=Path, help="data/cases/<case>/raw/opinions/<slug>.json")
     ap.add_argument(
         "--case",
         required=True,
@@ -318,7 +317,7 @@ def main() -> None:
         print("\n(dry-run: chunks.jsonl not written)")
         return
 
-    out_dir = WEB_DIR / slug
+    out_dir = paths.web_dir(case, slug)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "chunks.jsonl"
     with out_path.open("w", encoding="utf-8") as f:

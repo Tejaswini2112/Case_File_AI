@@ -1,9 +1,9 @@
 """
 Step 3 — Template-aware OCR cleaner.
 
-Reads:  data/ocr/<name>/pages.jsonl   (must have bucket field — run score_pages.py first)
-Writes: data/ocr/<name>/pages.jsonl   (adds clean_text + diagnostic fields)
-        data/ocr/<name>/clean/page_NNN.txt   (per page, for human diffing)
+Reads:  data/cases/<case>/ocr/<name>/pages.jsonl   (must have bucket field — run score_pages.py first)
+Writes: data/cases/<case>/ocr/<name>/pages.jsonl   (adds clean_text + diagnostic fields)
+        data/cases/<case>/ocr/<name>/clean/page_NNN.txt   (per page, for human diffing)
 
 Only processes pages where bucket == "clean". 4-750 DELETED-PAGE sheets, even
 when they land in the clean bucket, are routed to missing-info instead of cleaned.
@@ -11,9 +11,9 @@ when they land in the clean bucket, are routed to missing-info instead of cleane
 See docs/cleaner-spec.md for the design.
 
 Usage (run from project root):
-    python src/clean_pages.py data/ocr/bundy-part-01/pages.jsonl
-    python src/clean_pages.py data/ocr/bundy-part-01/pages.jsonl --detect-only
-    python src/clean_pages.py data/ocr/bundy-part-01/pages.jsonl --pages 4,15,47
+    python src/clean_pages.py data/cases/bundy/ocr/bundy-part-01/pages.jsonl
+    python src/clean_pages.py data/cases/bundy/ocr/bundy-part-01/pages.jsonl --detect-only
+    python src/clean_pages.py data/cases/bundy/ocr/bundy-part-01/pages.jsonl --pages 4,15,47
 """
 
 import argparse

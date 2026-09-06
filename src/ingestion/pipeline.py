@@ -15,16 +15,16 @@ about one case cannot be answered from another case's files.
 
 Usage:
     # First pass: OCR the PDF, then stop at score to inspect page quality.
-    python -m src.ingestion.pipeline data/raw/bundy-part-02.pdf --case bundy
+    python -m src.ingestion.pipeline data/cases/bundy/raw/scans/bundy-part-02.pdf --case bundy
 
     # Second pass: commit to a threshold and finish (re-runs score only,
     # skips the slow probe + OCR you already did).
-    python -m src.ingestion.pipeline data/raw/bundy-part-02.pdf --case bundy --from score --threshold 60
+    python -m src.ingestion.pipeline data/cases/bundy/raw/scans/bundy-part-02.pdf --case bundy --from score --threshold 60
 
     # Or do it all at once if you already know the threshold you want.
-    python -m src.ingestion.pipeline data/raw/bundy-part-02.pdf --case bundy --threshold 60
+    python -m src.ingestion.pipeline data/cases/bundy/raw/scans/bundy-part-02.pdf --case bundy --threshold 60
 
-    python -m src.ingestion.pipeline data/raw/bundy-part-02.pdf --case bundy --dry-run
+    python -m src.ingestion.pipeline data/cases/bundy/raw/scans/bundy-part-02.pdf --case bundy --dry-run
 """
 
 import argparse
@@ -35,6 +35,7 @@ from pathlib import Path
 # Imported rather than repeated as a bare 2, so the meaning of the code lives in
 # one place and the pipeline cannot drift from what score_pages actually exits
 # with.
+from src import paths
 from src.ingestion.score_pages import EXIT_NEEDS_REVIEW
 
 # Windows consoles default to cp1252 and mangle the em-dash in our status
@@ -48,7 +49,7 @@ RET = REPO_ROOT / "src" / "retrieval"
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Run the full ingestion pipeline on one PDF.")
-    ap.add_argument("pdf", type=Path, help="Path to the source PDF, e.g. data/raw/bundy-part-02.pdf")
+    ap.add_argument("pdf", type=Path, help="Path to the source PDF, e.g. data/cases/bundy/raw/scans/bundy-part-02.pdf")
     ap.add_argument(
         "--case",
         required=True,
@@ -89,9 +90,10 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true", help="Print the steps without running them")
     args = ap.parse_args()
 
-    # Every output path is derived from the PDF's filename ("stem").
+    # Output location comes from paths.py rather than being built here, so the
+    # layout has one owner and moving it is one edit.
     stem = args.pdf.stem                       # bundy-part-02
-    ocr_dir = REPO_ROOT / "data" / "ocr" / stem
+    ocr_dir = paths.ocr_dir(args.case, stem)
     pages = ocr_dir / "pages.jsonl"            # built by ocr, grown by score/clean/group
     chunks = ocr_dir / "chunks.jsonl"          # built by chunk, read by embed
 
@@ -107,7 +109,7 @@ def main() -> None:
     # ocr.py picks its own worker count unless told otherwise, so the flag is
     # only forwarded when explicitly set. Passing its default through here
     # would duplicate the choice in two places.
-    ocr_cmd = [ING / "ocr.py", args.pdf]
+    ocr_cmd = [ING / "ocr.py", args.pdf, "--out-dir", ocr_dir]
     if args.workers is not None:
         ocr_cmd += ["--workers", str(args.workers)]
 

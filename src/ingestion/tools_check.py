@@ -19,7 +19,7 @@ from pathlib import Path
 # Windows console defaults to cp1252 and chokes on non-ASCII in OCR output.
 sys.stdout.reconfigure(encoding="utf-8")
 
-PDF_PATH = Path("data/raw/bundy-part-01.pdf")
+PDF_PATH = Path("data/cases/bundy/raw/scans/bundy-part-01.pdf")
 
 # Common Windows install locations. Used as fallbacks if the binaries aren't on
 # PATH but are installed in the default spots.

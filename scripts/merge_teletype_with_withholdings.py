@@ -13,10 +13,16 @@ import json
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src import paths  # noqa: E402  (needs sys.path set above)
+
 sys.stdout.reconfigure(encoding="utf-8")
 
-JSONL = Path(r"c:\Learning\Case_File_AI\data\ocr\bundy-part-01\pages.jsonl")
-DOCS  = Path(r"c:\Learning\Case_File_AI\data\ocr\bundy-part-01\docs.jsonl")
+# Runs AFTER group_documents and BEFORE chunk_documents, and is not part of
+# pipeline.py — so re-running the pipeline discards its effect and it has to be
+# re-applied by hand. See docs/ingestion-scaling.md.
+JSONL = paths.ocr_dir("bundy", "bundy-part-01") / "pages.jsonl"
+DOCS = paths.ocr_dir("bundy", "bundy-part-01") / "docs.jsonl"
 
 PLACEHOLDER_TEXT = "[WITHHELD - FOIA 4-750]"
 

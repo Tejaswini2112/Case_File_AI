@@ -1,17 +1,12 @@
 # Secrets
 .env
 
-# Raw documents (large PDFs, kept out of git)
-data/raw/*
-!data/raw/.gitkeep
-
-# OCR output (derivative artifacts — regenerate from raw + scripts)
-data/ocr/*
-!data/ocr/.gitkeep
-
-# Web-sourced opinions (derivative artifacts — regenerate from raw + scripts)
-data/web/*
-!data/web/.gitkeep
+# Case data: source PDFs and fetched opinions (large, licensed, or both), plus
+# every derivative artifact — OCR text, chunks, logs, batch state. All of it
+# regenerates from the sources and the pipeline, so none of it belongs in git.
+# One rule now that everything about a case lives under one directory.
+data/cases/*
+!data/cases/.gitkeep
 
 # Python
 __pycache__/

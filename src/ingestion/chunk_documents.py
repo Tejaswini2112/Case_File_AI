@@ -38,8 +38,8 @@ Special cases:
   - skipped/empty pages get no doc_id from step 4 and are naturally ignored.
 
 Usage (run from project root):
-    python src/chunk_documents.py data/ocr/bundy-part-01/pages.jsonl --case bundy
-    python src/chunk_documents.py data/ocr/bundy-part-01/pages.jsonl --case bundy --dry-run
+    python src/chunk_documents.py data/cases/bundy/ocr/bundy-part-01/pages.jsonl --case bundy
+    python src/chunk_documents.py data/cases/bundy/ocr/bundy-part-01/pages.jsonl --case bundy --dry-run
 """
 
 import argparse

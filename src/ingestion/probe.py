@@ -5,8 +5,8 @@ This is the first thing to run. It answers the one question that decides
 your entire Phase 1 parsing approach. Costs nothing, takes 30 seconds.
 
 Usage (run from project root):
-    1. Drop a PDF into data/raw/  (e.g. Bundy Part 1 from vault.fbi.gov)
-    2. python src/probe.py data/raw/your-file.pdf
+    1. Drop a PDF into data/cases/<case>/raw/scans/
+    2. python src/probe.py data/cases/<case>/raw/scans/your-file.pdf
 
 Read the verdict at the bottom of the output.
 """
@@ -24,7 +24,7 @@ def probe(pdf_path: str) -> None:
     path = Path(pdf_path)
     if not path.exists():
         print(f"❌ File not found: {path}")
-        print("   Drop a PDF into data/raw/ and pass its path as an argument.")
+        print("   Drop a PDF into data/cases/<case>/raw/scans/ and pass its path.")
         sys.exit(1)
 
     doc = fitz.open(path)
@@ -81,6 +81,6 @@ def probe(pdf_path: str) -> None:
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python src/probe.py <path-to-pdf>")
-        print("Example: python src/probe.py data/raw/bundy-part-01.pdf")
+        print("Example: python src/probe.py data/cases/bundy/raw/scans/bundy-part-01.pdf")
         sys.exit(1)
     probe(sys.argv[1])

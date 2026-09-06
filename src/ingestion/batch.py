@@ -5,8 +5,8 @@ The pipeline handles exactly one PDF per invocation, which is fine for three
 documents and impossible for a hundred: you would run a hundred commands, and
 the fourth failing would leave the remaining ninety-six untouched.
 
-    python -m src.ingestion.batch data/raw/ --threshold 60 --workers 8
-    python -m src.ingestion.batch data/raw/ --threshold 60 --dry-run
+    python -m src.ingestion.batch data/cases/bundy/raw/scans/ --case bundy \n        --threshold 60 --workers 8
+    python -m src.ingestion.batch data/cases/bundy/raw/scans/ --case bundy \n        --threshold 60 --dry-run
 
 Each PDF runs through the existing pipeline as a subprocess. That boundary is
 the point: a corrupt file that kills the interpreter, or a segfault inside
@@ -14,7 +14,7 @@ poppler, takes down one file rather than the batch. Failure isolation comes
 from the process boundary rather than from exceptions someone had to predict.
 
 Progress is one line per file. Per-page detail goes to
-data/ocr/<stem>/ingest.log, because fifty files of page-by-page output is
+data/cases/<case>/ocr/<stem>/ingest.log, because fifty files of page-by-page output is
 thousands of lines nobody reads.
 """
 
@@ -28,6 +28,7 @@ from pathlib import Path
 
 from pdf2image import pdfinfo_from_path
 
+from src import paths
 from src.cases import validate as validate_case
 from src.ingestion.ocr import find_poppler_bin, source_fingerprint
 from src.ingestion.score_pages import EXIT_NEEDS_REVIEW
@@ -36,7 +37,6 @@ sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-STATE_PATH = REPO_ROOT / "data" / "ocr" / "batch-state.json"
 
 # Measured on this corpus at 300 dpi: ~2.3 s per page single-threaded, and
 # about 2.4x faster on 8 workers rather than 8x. Used only for the --dry-run
@@ -65,11 +65,11 @@ def discover(paths: list[Path]) -> list[Path]:
     return found
 
 
-def load_state() -> dict:
-    if not STATE_PATH.exists():
+def load_state(state_path: Path) -> dict:
+    if not state_path.exists():
         return {}
     try:
-        return json.loads(STATE_PATH.read_text(encoding="utf-8"))
+        return json.loads(state_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         # A damaged state file must not stop a run. The cost of losing it is
         # redoing work that is itself idempotent, so treating it as empty is
@@ -78,14 +78,14 @@ def load_state() -> dict:
         return {}
 
 
-def save_state(state: dict) -> None:
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_PATH.with_suffix(".json.tmp")
+def save_state(state_path: Path, state: dict) -> None:
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = state_path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
-    tmp.replace(STATE_PATH)
+    tmp.replace(state_path)
 
 
-def is_complete(state: dict, job: Job) -> bool:
+def is_complete(state: dict, job: Job, case: str) -> bool:
     """True when this exact PDF finished a previous run and its output survives.
 
     Three conditions rather than one. The recorded status could be stale, the
@@ -98,7 +98,7 @@ def is_complete(state: dict, job: Job) -> bool:
         return False
     if entry.get("fingerprint") != job.fingerprint:
         return False
-    return (REPO_ROOT / "data" / "ocr" / job.pdf.stem / "chunks.jsonl").exists()
+    return (paths.ocr_dir(case, job.pdf.stem) / "chunks.jsonl").exists()
 
 
 def build_jobs(
@@ -165,7 +165,7 @@ def run_one(
     scale the page-by-page detail is thousands of lines, and it is only wanted
     when something needs attention.
     """
-    log_dir = REPO_ROOT / "data" / "ocr" / job.pdf.stem
+    log_dir = paths.ocr_dir(case, job.pdf.stem)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "ingest.log"
 
@@ -270,8 +270,9 @@ def main() -> None:
     if not jobs:
         sys.exit("No readable PDFs found.")
 
-    state = load_state()
-    todo = [j for j in jobs if not is_complete(state, j)]
+    state_path = paths.batch_state_path(case)
+    state = load_state(state_path)
+    todo = [j for j in jobs if not is_complete(state, j, case)]
     skipped = len(jobs) - len(todo)
 
     # Largest first. If the longest document runs last, everything else finishes
@@ -330,7 +331,7 @@ def main() -> None:
         }
         # Saved after every file, not at the end. A batch killed halfway must
         # still know what it finished.
-        save_state(state)
+        save_state(state_path, state)
 
         if outcome == "ok":
             succeeded.append(job)

@@ -36,8 +36,8 @@ The grouping rules (in order, first match wins):
      "FREEDOM OF INFORMATION", "COVER SHEET", or "THE BEST COPY".
 
 Usage (run from project root):
-    python src/group_documents.py data/ocr/bundy-part-01/pages.jsonl
-    python src/group_documents.py data/ocr/bundy-part-01/pages.jsonl --dry-run
+    python src/group_documents.py data/cases/bundy/ocr/bundy-part-01/pages.jsonl
+    python src/group_documents.py data/cases/bundy/ocr/bundy-part-01/pages.jsonl --dry-run
 """
 
 import argparse

@@ -13,9 +13,9 @@ free REST API — structured JSON, real metadata, no bot wall. You need a free
 token: https://www.courtlistener.com/help/api/rest/  → put it in .env as
     COURTLISTENER_TOKEN=...
 
-For each case we save ONE JSON file to data/raw/opinions/<slug>.json containing
+For each opinion we save ONE JSON file under its case's raw/opinions/ directory,
 both the opinion record (the text) and its cluster record (case name, citation,
-date, docket, judges). data/raw is gitignored, so nothing here is committed.
+date, docket, judges). data/cases is gitignored, so nothing here is committed.
 
 Usage (run from project root):
     python -m src.ingestion.fetch_opinions
@@ -35,7 +35,9 @@ from dotenv import load_dotenv
 sys.stdout.reconfigure(encoding="utf-8")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RAW_DIR = REPO_ROOT / "data" / "raw" / "opinions"
+sys.path.insert(0, str(REPO_ROOT))
+
+from src import paths  # noqa: E402  (needs sys.path set above)
 
 API = "https://www.courtlistener.com/api/rest/v4"
 
@@ -44,12 +46,16 @@ API = "https://www.courtlistener.com/api/rest/v4"
 # on that record gives us the authoritative case metadata. Slugs double as the
 # source_stem downstream, so they show up in chunk ids and citations — keep
 # them short, stable, and human-readable.
+# (case, slug, courtlistener opinion id, description). The case comes first
+# because it decides where the file lands: an opinion belongs to an
+# investigation, and grouping by case is what makes "everything about BTK" one
+# directory rather than a filename pattern.
 CASES = [
-    ("bundy-1984-chi-omega",     1719324, "455 So. 2d 330  — Chi Omega direct appeal"),
-    ("bundy-1985-leach",         1817368, "471 So. 2d 9    — Kimberly Leach appeal"),
-    ("bundy-1986-postconviction", 1875754, "490 So. 2d 1258 — postconviction appeal"),
-    ("bundy-1986-companion",     1709742, "497 So. 2d 1209 — companion habeas denial"),
-    ("bundy-1989-final",         1111125, "538 So. 2d 445  — final Rule 3.850 appeal"),
+    ("bundy", "bundy-1984-chi-omega",      1719324, "455 So. 2d 330  — Chi Omega direct appeal"),
+    ("bundy", "bundy-1985-leach",          1817368, "471 So. 2d 9    — Kimberly Leach appeal"),
+    ("bundy", "bundy-1986-postconviction", 1875754, "490 So. 2d 1258 — postconviction appeal"),
+    ("bundy", "bundy-1986-companion",      1709742, "497 So. 2d 1209 — companion habeas denial"),
+    ("bundy", "bundy-1989-final",          1111125, "538 So. 2d 445  — final Rule 3.850 appeal"),
 ]
 
 # Transient failures are real here (we already ate one ReadTimeout while probing).
@@ -137,17 +143,16 @@ def main() -> None:
 
     cases = CASES
     if args.only:
-        cases = [c for c in CASES if c[0] == args.only]
+        cases = [c for c in CASES if c[1] == args.only]
         if not cases:
-            slugs = ", ".join(c[0] for c in CASES)
+            slugs = ", ".join(c[1] for c in CASES)
             sys.exit(f"Unknown slug '{args.only}'. Choose from: {slugs}")
 
     token = load_token()
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
     headers = {"Authorization": f"Token {token}", "User-Agent": "Case_File_AI research"}
 
     with httpx.Client(headers=headers) as client:
-        for slug, opinion_id, label in cases:
+        for case, slug, opinion_id, label in cases:
             print(f"[{slug}]  {label}")
             payload = fetch_case(client, slug, opinion_id)
 
@@ -169,11 +174,13 @@ def main() -> None:
                   f"cite={cites}")
             print(f"    text_field={text_field}  chars={len(op.get(text_field) or '')}")
 
-            out = RAW_DIR / f"{slug}.json"
+            out_dir = paths.opinions_dir(case)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out = out_dir / f"{slug}.json"
             out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             print(f"    -> {out.relative_to(REPO_ROOT)}\n")
 
-    print(f"[OK] Saved {len(cases)} opinion(s) to {RAW_DIR.relative_to(REPO_ROOT)}")
+    print(f"[OK] Saved {len(cases)} opinion(s) under {paths.CASES_ROOT.relative_to(REPO_ROOT)}")
 
 
 if __name__ == "__main__":

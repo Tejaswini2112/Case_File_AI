@@ -63,7 +63,7 @@ MAX_QUESTION_CHARS = 1000
 # This list is coupled to the pipeline — a new doc_kind in chunk_documents.py
 # or chunk_opinions.py has to be added here too, or the API will reject a kind
 # the corpus really holds. It is not derived from the data at import time on
-# purpose: data/ocr is gitignored, so nothing here can read the corpus in CI.
+# purpose: data/cases is gitignored, so nothing here can read the corpus in CI.
 DocKind = Literal[
     "newspaper",
     "court-opinion",

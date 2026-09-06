@@ -1,10 +1,13 @@
 """
 Step 1 — OCR every page of a scanned PDF.
 
-Reads:  data/raw/<name>.pdf
-Writes: data/ocr/<name>/page_NNN.txt    one text file per page (human-readable)
-        data/ocr/<name>/page_NNN.json   per-page result + the inputs it came from
-        data/ocr/<name>/pages.jsonl     one JSON row per page (machine-readable)
+Reads:  a source PDF
+Writes, into the --out-dir it is given:
+        page_NNN.txt    one text file per page (human-readable)
+        page_NNN.json   per-page result + the inputs it came from
+        pages.jsonl     one JSON row per page (machine-readable)
+
+Where that directory sits is src/paths.py's decision, not this file's.
 
 Each JSONL row carries the metrics needed to score and route the page later
 (see score_pages.py) but does NOT yet assign a bucket — that decision comes
@@ -17,8 +20,8 @@ pages are genuinely done. pages.jsonl is assembled from those sidecars at the
 end rather than appended to as work proceeds.
 
 Usage (run from project root):
-    python src/ingestion/ocr.py data/raw/bundy-part-01.pdf
-    python src/ingestion/ocr.py data/raw/bundy-part-01.pdf --force
+    python src/ingestion/ocr.py path/to.pdf --out-dir data/cases/bundy/ocr/bundy-part-01
+    python src/ingestion/ocr.py path/to.pdf --out-dir <dir> --force --workers 8
 """
 
 import argparse
@@ -461,14 +464,13 @@ def run_sequential(
         )
 
 
-def main(pdf_path: Path, force: bool = False, workers: int = 1) -> None:
+def main(pdf_path: Path, out_dir: Path, force: bool = False, workers: int = 1) -> None:
     if not pdf_path.exists():
         sys.exit(f"Not found: {pdf_path}")
 
     ensure_tesseract()
     poppler_path = find_poppler_bin()
 
-    out_dir = Path("data/ocr") / pdf_path.stem
     out_dir.mkdir(parents=True, exist_ok=True)
     jsonl_path = out_dir / "pages.jsonl"
 
@@ -545,6 +547,16 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="OCR every page of a scanned PDF.")
     ap.add_argument("pdf", type=Path, help="Path to the source PDF")
     ap.add_argument(
+        "--out-dir",
+        type=Path,
+        required=True,
+        help="Directory for this document's page text and sidecars. Required "
+             "rather than derived: ocr.py knowing where data lives would put a "
+             "copy of the layout here, and src/paths.py owns that. It also "
+             "makes a benchmark run safe by construction -- point it at a "
+             "scratch directory and real output cannot be touched.",
+    )
+    ap.add_argument(
         "--force",
         action="store_true",
         help="Re-OCR every page, ignoring finished work from previous runs",
@@ -559,4 +571,4 @@ if __name__ == "__main__":
     args = ap.parse_args()
     if args.workers < 1:
         sys.exit("--workers must be at least 1")
-    main(args.pdf, force=args.force, workers=args.workers)
+    main(args.pdf, args.out_dir, force=args.force, workers=args.workers)
