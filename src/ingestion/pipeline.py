@@ -9,18 +9,22 @@ buckets. Without a threshold it only prints the distribution (so you can pick
 one), and the pipeline pauses there. Pass --threshold to score AND run through
 to the search index in a single shot.
 
+Every run needs --case: which investigation these documents belong to. It is
+written into each chunk and is what retrieval filters on, so that a question
+about one case cannot be answered from another case's files.
+
 Usage:
     # First pass: OCR the PDF, then stop at score to inspect page quality.
-    python -m src.ingestion.pipeline data/raw/bundy-part-02.pdf
+    python -m src.ingestion.pipeline data/raw/bundy-part-02.pdf --case bundy
 
     # Second pass: commit to a threshold and finish (re-runs score only,
     # skips the slow probe + OCR you already did).
-    python -m src.ingestion.pipeline data/raw/bundy-part-02.pdf --from score --threshold 60
+    python -m src.ingestion.pipeline data/raw/bundy-part-02.pdf --case bundy --from score --threshold 60
 
     # Or do it all at once if you already know the threshold you want.
-    python -m src.ingestion.pipeline data/raw/bundy-part-02.pdf --threshold 60
+    python -m src.ingestion.pipeline data/raw/bundy-part-02.pdf --case bundy --threshold 60
 
-    python -m src.ingestion.pipeline data/raw/bundy-part-02.pdf --dry-run
+    python -m src.ingestion.pipeline data/raw/bundy-part-02.pdf --case bundy --dry-run
 """
 
 import argparse
@@ -45,6 +49,14 @@ RET = REPO_ROOT / "src" / "retrieval"
 def main() -> None:
     ap = argparse.ArgumentParser(description="Run the full ingestion pipeline on one PDF.")
     ap.add_argument("pdf", type=Path, help="Path to the source PDF, e.g. data/raw/bundy-part-02.pdf")
+    ap.add_argument(
+        "--case",
+        required=True,
+        help="Case these documents belong to, e.g. bundy. Must be registered "
+             "in src/cases.py. Required rather than inferred from the "
+             "filename, because inferring it would fail silently for any "
+             "case whose documents are not named after it.",
+    )
     ap.add_argument("--from", dest="start", help="Resume from a stage (e.g. clean)")
     ap.add_argument(
         "--until",
@@ -106,7 +118,7 @@ def main() -> None:
         ("score",  score_cmd),
         ("clean",  [ING / "clean_pages.py",     pages]),
         ("group",  [ING / "group_documents.py", pages]),
-        ("chunk",  [ING / "chunk_documents.py", pages]),
+        ("chunk",  [ING / "chunk_documents.py", pages, "--case", args.case]),
         ("embed",  [RET / "embed_chunks.py",    chunks]),
     ]
 

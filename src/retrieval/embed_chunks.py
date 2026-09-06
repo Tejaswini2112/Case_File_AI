@@ -149,6 +149,12 @@ def chunk_to_record(chunk: dict) -> dict:
         # Decision 4: metadata schema. Every field below exists because we've
         # already imagined a query that needs it for filtering or citation.
         "doc_id":         chunk["doc_id"],
+        # Which investigation this chunk belongs to, and the field retrieval
+        # filters on to keep one case's questions out of another's documents.
+        # Required rather than defaulted: a chunk written before the field
+        # existed would otherwise index as some arbitrary case and be silently
+        # wrong, where a KeyError says plainly that it needs re-chunking.
+        "case":           chunk["case"],
         "source_stem":    chunk["source_stem"],
         "doc_kind":       chunk["doc_kind"] or "unknown",
         "doc_template":   chunk.get("doc_template") or "unknown",

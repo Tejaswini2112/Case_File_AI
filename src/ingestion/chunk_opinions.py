@@ -34,6 +34,13 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup, NavigableString
 
+# These run both as `python -m src.ingestion.<name>` and as a bare script
+# path (pipeline.py invokes them the second way), so the repo root goes on
+# sys.path before importing anything under src. Same approach as ask.py.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from src.cases import validate as validate_case
+
 # Reuse the FBI chunker's token estimator so chunk sizes are measured the same
 # way across both document types (comparable stats, one source of truth).
 from src.ingestion.chunk_documents import count_tokens
@@ -226,8 +233,19 @@ def pick_citation(cluster: dict) -> tuple[str, int]:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Topic-aware chunker for court opinions.")
     ap.add_argument("raw_json", type=Path, help="data/raw/opinions/<slug>.json")
+    ap.add_argument(
+        "--case",
+        required=True,
+        help="Case this opinion belongs to, e.g. bundy. Must be registered in "
+             "src/cases.py.",
+    )
     ap.add_argument("--dry-run", action="store_true", help="Print the summary; don't write chunks.jsonl")
     args = ap.parse_args()
+
+    try:
+        case = validate_case(args.case)
+    except ValueError as exc:
+        sys.exit(str(exc))
 
     if not args.raw_json.exists():
         sys.exit(f"Not found: {args.raw_json}")
@@ -264,6 +282,10 @@ def main() -> None:
             chunks.append({
                 "chunk_id": f"{slug}__chunk-{idx:02d}",
                 "doc_id": slug,
+                # Same field the PDF path writes. An opinion and a teletype
+                # about the same investigation must filter together, so the
+                # two ingestion paths have to agree on this name and value.
+                "case": case,
                 "source_stem": slug,
                 "doc_kind": "court-opinion",
                 "doc_template": citation,

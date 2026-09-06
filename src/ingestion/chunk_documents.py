@@ -18,6 +18,7 @@ time and (b) render a real citation back to a page range:
     {
       "chunk_id":       "bundy-part-01__doc-017__chunk-02",
       "doc_id":         "bundy-part-01__doc-017",
+      "case":           "bundy",             # which investigation
       "source_stem":    "bundy-part-01",
       "doc_kind":       "teletype",
       "doc_template":   "FD-36",
@@ -37,8 +38,8 @@ Special cases:
   - skipped/empty pages get no doc_id from step 4 and are naturally ignored.
 
 Usage (run from project root):
-    python src/chunk_documents.py data/ocr/bundy-part-01/pages.jsonl
-    python src/chunk_documents.py data/ocr/bundy-part-01/pages.jsonl --dry-run
+    python src/chunk_documents.py data/ocr/bundy-part-01/pages.jsonl --case bundy
+    python src/chunk_documents.py data/ocr/bundy-part-01/pages.jsonl --case bundy --dry-run
 """
 
 import argparse
@@ -47,6 +48,13 @@ import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
+
+# These run both as `python -m src.ingestion.<name>` and as a bare script
+# path (pipeline.py invokes them the second way), so the repo root goes on
+# sys.path before importing anything under src. Same approach as ask.py.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from src.cases import validate as validate_case
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -297,6 +305,7 @@ def build_all_chunks(
     pages: list[dict],
     source_stem: str,
     doc_summaries: dict[str, dict],
+    case: str,
 ) -> list[dict]:
     order, docs = group_pages_by_doc(pages)
     all_chunks: list[dict] = []
@@ -325,6 +334,10 @@ def build_all_chunks(
             all_chunks.append({
                 "chunk_id": f"{doc_id}__chunk-{idx:02d}",
                 "doc_id": doc_id,
+                # Which investigation this document belongs to. Retrieval is
+                # scoped by it, so a question about one case cannot be
+                # answered from another's files.
+                "case": case,
                 "source_stem": source_stem,
                 "doc_kind": kind,
                 "doc_template": first_template,
@@ -383,9 +396,22 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("jsonl_path", type=Path,
                     help="Path to pages.jsonl produced by group_documents.py")
+    ap.add_argument(
+        "--case",
+        required=True,
+        help="Case these documents belong to, e.g. bundy. Must be registered in "
+             "src/cases.py. Required rather than derived from the filename: "
+             "'bundy-part-01' happens to start with its case name, but a case "
+             "called 'green-river' would not, and the failure would be silent.",
+    )
     ap.add_argument("--dry-run", action="store_true",
                     help="Compute chunks and print summary, but don't write chunks.jsonl")
     args = ap.parse_args()
+
+    try:
+        case = validate_case(args.case)
+    except ValueError as exc:
+        sys.exit(str(exc))
 
     if not args.jsonl_path.exists():
         sys.exit(f"Not found: {args.jsonl_path}")
@@ -398,7 +424,7 @@ def main() -> None:
     source_stem = args.jsonl_path.parent.name
     doc_summaries = load_doc_summaries(args.jsonl_path.parent / "docs.jsonl")
 
-    chunks = build_all_chunks(pages, source_stem, doc_summaries)
+    chunks = build_all_chunks(pages, source_stem, doc_summaries, case)
     print_summary(chunks)
 
     if args.dry_run:

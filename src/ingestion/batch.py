@@ -28,6 +28,7 @@ from pathlib import Path
 
 from pdf2image import pdfinfo_from_path
 
+from src.cases import validate as validate_case
 from src.ingestion.ocr import find_poppler_bin, source_fingerprint
 from src.ingestion.score_pages import EXIT_NEEDS_REVIEW
 
@@ -149,7 +150,8 @@ def human_time(seconds: float) -> str:
 
 
 def run_one(
-    job: Job, threshold: float, workers: int, until: str | None, accept_low_quality: bool
+    job: Job, case: str, threshold: float, workers: int, until: str | None,
+    accept_low_quality: bool,
 ) -> tuple[str, str]:
     """Run the full pipeline for one PDF. Returns (outcome, detail).
 
@@ -169,6 +171,7 @@ def run_one(
 
     cmd = [
         sys.executable, "-m", "src.ingestion.pipeline", str(job.pdf),
+        "--case", case,
         "--threshold", str(threshold),
         "--workers", str(workers),
     ]
@@ -230,6 +233,13 @@ def main() -> None:
              "without it the pipeline pauses for a human to inspect each file's "
              "distribution, which does not scale past a handful of documents.",
     )
+    ap.add_argument(
+        "--case",
+        required=True,
+        help="Case every PDF in this run belongs to, e.g. bundy. One flag for "
+             "the folder: a batch mixing cases should be two runs, so that "
+             "which case a document belongs to is never a guess.",
+    )
     ap.add_argument("--workers", type=int, default=None, help="OCR workers per file")
     ap.add_argument(
         "--until",
@@ -243,6 +253,11 @@ def main() -> None:
     )
     ap.add_argument("--dry-run", action="store_true", help="Show the plan without running")
     args = ap.parse_args()
+
+    try:
+        case = validate_case(args.case)
+    except ValueError as exc:
+        sys.exit(str(exc))
 
     pdfs = discover(args.paths)
     if not pdfs:
@@ -302,7 +317,7 @@ def main() -> None:
 
         t0 = time.time()
         outcome, detail = run_one(
-            job, args.threshold, workers, args.until, args.accept_low_quality
+            job, case, args.threshold, workers, args.until, args.accept_low_quality
         )
         elapsed = time.time() - t0
 
