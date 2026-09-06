@@ -12,6 +12,14 @@ that, and what was done about it.
 Each entry follows the same shape: what broke, how it was measured, what
 changed, and how the change was proved not to alter output.
 
+The first five entries are about volume — more pages, more documents, more at
+once. The last three are about a second kind of growth: a second *case*. Those
+turned out to be correctness problems rather than throughput ones, and they
+only became visible when the corpus was rebuilt from scratch for the first
+time. That is worth saying plainly, because "it scales" and "it is correct when
+you run it again" are different claims, and only the second one was ever
+tested by accident.
+
 ---
 
 ## 1. Streaming page rendering
@@ -683,3 +691,207 @@ the real cause. It now says plainly that there is nothing to ingest.
 It does not choose a better cut-off for you. It uses the one you give and tells
 you when that number looks wrong for a particular document. Choosing
 automatically is a larger question, and flagging is more honest than guessing.
+
+---
+
+## 6. Grouping data by case
+
+*September 2026 · `src/paths.py` · commit `c9a00fb`*
+
+### The problem, plainly
+
+Files were filed by **how they arrived** rather than **what they are about**.
+Scanned PDFs went in one folder, court opinions fetched from the web in
+another. So everything about one investigation was split across two places, and
+adding a third kind of source would have made it three.
+
+That is fine with one case. It breaks the moment there are two, because every
+question you then want to ask is case-shaped: re-index this case, delete this
+case, copy this case somewhere else. Filed by source, each of those means
+hunting through several folders for the right filenames. Filed by case, each is
+one folder.
+
+The layout is now:
+
+```
+data/cases/<case>/
+    raw/scans/       source PDFs
+    raw/opinions/    fetched court opinions
+    ocr/             per-document OCR output
+    web/             parsed opinion chunks
+```
+
+### One place that knows where things live
+
+Seven different files used to build their own paths out of hardcoded text. That
+made the layout an unwritten agreement between them: changing it meant seven
+matching edits, with no way to tell which one you had forgotten.
+
+Now one module answers that question and everything else asks it. A single
+setting relocates the whole lot — onto another disk, or into a scratch
+directory for a test run that must not touch real data.
+
+The OCR step in particular now has to be *told* where to write, rather than
+working it out. It knows nothing about the layout at all, which is what lets
+the layout change without touching it. It also makes a benchmark run safe by
+construction: point it at a scratch folder and real output is unreachable.
+Previously the only protection was renaming the input file and hoping.
+
+### Filenames deliberately unchanged
+
+Every document's id is built from its source filename, every chunk's id from
+the document's, and every entry in the search index from the chunk's. Renaming
+a file would therefore orphan every entry it produced and change every citation
+that names it. Moving files changes none of that.
+
+### What it cost, and what it found
+
+Moving the folders forced a full re-OCR — the resume check verifies a page's
+text file still exists where it was recorded, and moving it breaks that. Four
+minutes for 339 pages.
+
+That re-run is what uncovered the next two entries. Rebuilding the corpus from
+scratch had never been done before, and it turned out not to produce the same
+corpus.
+
+---
+
+## 7. Withholdings that interrupt a document
+
+*September 2026 · `src/ingestion/group_documents.py` · commit `c131def`*
+
+### The problem, plainly
+
+Rebuilding produced **377 chunks instead of 372**, with eleven pages assigned
+to different documents.
+
+The OCR text was identical — all 339 pages, character for character. So were
+the quality scores and the cleaned text. Only the grouping differed.
+
+The cause was a single rule, stated as an absolute: *a FOIA deletion sheet is
+always its own document.*
+
+That is right when a withholding ends a document. It is wrong when one
+interrupts a document. A teletype whose middle page was withheld arrived as
+three separate documents — the body, the withholding, and the rest — and the
+rest then looked like an orphan, because the document it was continuing had
+turned into a deletion sheet. One wrong rule, two symptoms.
+
+### Why it could not be fixed where it happened
+
+Deciding which case a withholding is requires looking at **what comes after
+it**. The grouper reads pages in order, one at a time, and at the moment it
+meets the withholding the continuation has not been read yet. It cannot know.
+
+So the correction happens afterwards, in a second pass, when both sides are
+visible.
+
+### The evidence used, and one that failed
+
+The obvious signal was the case-file number: if the pages either side of a
+withholding carry the same number, they are one document.
+
+That failed. The numbers are read by OCR from damaged paper, so one file number
+appears across the pages of a single document as `886895`, `8810975`, `8812975`
+and `8819975`. Matching on them missed the longest of the three cases entirely.
+The grouper's own comments already warned that a shared number is weak evidence.
+
+The signal that worked was already being computed and thrown away. The grouper
+detects "this page says it is a continuation" — an explicit marker like *PAGE
+TWO* or *Continued from*. It then discards that when the preceding document
+turns out to be a withholding, because it can only answer "continue or start
+new". Recording it instead of discarding it is the whole fix. Case numbers
+remain as a weaker fallback.
+
+### The hidden part
+
+Three scripts existed to undo this by hand, with document ids written into
+them. They ran between grouping and chunking, they were not part of the
+pipeline, and **re-running the pipeline silently discarded their effect**.
+
+Nobody would notice. There is no error. The corpus simply becomes slightly
+different, and every id derived from it moves.
+
+### Verification
+
+The corpus as it stood was snapshotted first — all 372 chunk ids — and the fix
+had to reproduce it.
+
+It does, for the two withholding cases: a teletype reassembled across pages
+26–36 with page 32 correctly left out as unreadable, and two shorter ones
+across pages 61–63 and 77–79. Parts 02 and 03 were untouched. 371 of 372 chunks
+now reproduce with no manual step.
+
+### The one it does not fix
+
+A newspaper article across two pages, where the first page's form header was
+never detected — so there is no continuation marker and no shared number.
+Nothing in the text links them. A person read both pages and could see it was
+one article.
+
+That is not a rule, and pretending it is would produce a rule that merges
+things it should not. It needs somewhere else to live, which is the next entry.
+
+---
+
+## 8. Where human judgement lives
+
+*September 2026 · `src/ingestion/apply_corrections.py` · commit `b0117ee`*
+
+### The problem, plainly
+
+Some decisions no rule will ever make. A form whose printed header the detector
+missed. An internal memo that should count as a teletype. Two pages that are
+obviously one newspaper article to anyone who reads them.
+
+Those judgements existed only inside one-off scripts, with document ids typed
+into them. Which meant two things: re-running the pipeline threw them away
+without saying so, and they could not be applied to any other case, because
+each one encoded fixes for particular pages of particular Bundy files.
+
+### The change
+
+They are data now — one file per case, read by a pipeline step that runs every
+time:
+
+```
+corrections/bundy.json
+```
+
+Two kinds of entry, deliberately few:
+
+- **reclassify** — this document is really a form / legal / teletype
+- **merge** — these documents are really one document
+
+A richer format designed against a single known example would be guesswork. A
+second case can say what else is needed.
+
+### Two decisions worth naming
+
+**It is kept in version control, not with the data.** Everything under the data
+folder is derived and can be rebuilt from the sources. This cannot: it is the
+record of a person reading a document and deciding what it is. Losing it to a
+data wipe is precisely the failure that made it necessary.
+
+**Every entry carries a `why`.** Not decoration. In a year, that sentence is
+the only way to tell a considered correction from a mistake someone made once,
+and without it nobody will dare delete any of them.
+
+### A correction that no longer matches
+
+If a correction names a document that does not exist, it is reported rather
+than ignored. That usually means grouping has changed and the correction now
+describes something that is not there — which is exactly the moment a person
+should look again, rather than the moment to fail silently in either direction.
+
+### Verification
+
+Grouping, correcting and chunking now reproduce **all 372 chunks with identical
+ids**, and every field on every chunk — document id, kind, page numbers, case
+numbers, position, text — matches the original corpus exactly.
+
+The three scripts were deleted. Leaving them would invite someone to run a step
+the pipeline already does.
+
+**No manual step now remains between a source PDF and the search index.** That
+was not true before, and it was not true in a way nobody could see.

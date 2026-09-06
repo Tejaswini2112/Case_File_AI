@@ -1,190 +1,204 @@
 # CaseFile AI
 
-A retrieval-augmented research assistant for declassified criminal case files.
-Queries FBI Vault PDFs (starting with the Ted Bundy archive) and returns cited
-answers grounded in primary-source documents.
+Ask questions about declassified criminal case files and get answers traced to
+the page they came from — or told plainly that the files do not say.
 
-## Status
+```
+$ python src/agents/ask.py "How did Bundy escape from custody?" --case bundy --top-k 4
 
-**Phase 1 — Complete.** End-to-end RAG pipeline shipped: scanned PDF → OCR
-→ cleaned chunks → vector index → cited answer. Validated by a 10-question
-eval suite.
+**First escape (Aspen, Pitkin County Courthouse):** Bundy jumped from a
+second-floor window in the back of the courtroom when he was left unguarded
+during a recess in a pretrial hearing [bundy-part-01__doc-026, p.41]. [...]
+When asked why he escaped, Bundy replied, "I didn't want to go back to jail.
+It was just too pretty outside" [bundy-part-01__doc-026, p.41].
 
-```text
-$ python src/agents/ask.py "What evidence was used against Bundy?"
+**Second escape (Glenwood Springs, Garfield County Jail):** Bundy removed a
+light fixture from the ceiling of his cell, slid through the resulting 12-inch
+hole, crawled across the ceiling space, dropped into the jailer's apartment,
+and walked out the front door [bundy-part-02__doc-010, p.15;
+bundy-part-02__doc-012, p.17]. Notably, other inmates had reported that Bundy
+was crawling in the space above his cell, and the sheriff's department had
+called a welder to secure the fixture — but the welder never arrived before
+Bundy escaped [bundy-part-02__doc-010, p.15].
 
-Physical evidence collected from a 1966 Ford Station Wagon included a
-large clear plastic drinking cup, a Meadow Gold milk carton, a Fig cookie
-wrapper, two Camel cigarette wrappers, two Marlborough cigarette
-wrappers, a torn check, paper stickers from a Christian Book Store, a
-grocery store receipt, a Polaroid negative, a Kentucky Fried Chicken
-box [...] and a latent fingerprint taken from the driver's side window
-[bundy-part-01__doc-003, p.6; bundy-part-01__doc-003, p.7].
-[...]
+Sources used (4 excerpts retrieved):
+  [1] bundy-part-02__doc-012  pages=[17]     kind=newspaper  score=0.513
+  [2] bundy-part-01__doc-016  pages=[24,25]  kind=newspaper  score=0.465
+  [3] bundy-part-02__doc-010  pages=[15]     kind=newspaper  score=0.463
+  [4] bundy-part-01__doc-026  pages=[41]     kind=newspaper  score=0.457
+
+Model: claude-sonnet-4-6  |  tokens: 3067 in / 445 out  |  cost: ~$0.0159
 ```
 
-See [`docs/roadmap.md`](docs/roadmap.md) for the full multi-phase plan and
-[`docs/data-prep-log.md`](docs/data-prep-log.md) for the OCR/cleaning decisions log.
+That is a real run, lightly trimmed for length. Note that the welder detail is
+in the files and not in general knowledge — it is the kind of thing this system
+exists to surface.
 
-## Eval Baseline (Phase 1 exit)
+Ask it something the files do not cover and it refuses rather than guessing,
+at no cost, because no model is called at all.
 
-Run via `python tests/run_eval.py`. 10 golden Q&A pairs covering subject
-match, narrative synthesis, specific-fact recall, paraphrase, case-number
-lookup, FOIA-deletion handling, and three out-of-corpus refusal tests.
+---
 
-| Metric | Result |
+## Why this is harder than it looks
+
+The corpus is **339 pages of 1970s FBI paper**, released under the Freedom of
+Information Act and scanned badly:
+
+- Typewritten carbon copies, OCR'd at 300 dpi. Median per-page confidence is
+  **77.6 out of 100**; the floor is zero. `cup` reads as `cvp`, `torn` as `tom`.
+- **22 pages are FOIA deletion sheets** — placeholders where content was
+  withheld. They interrupt documents mid-way.
+- Documents span pages with no machine-readable link between them. A single
+  teletype can run across ten physical pages, two of which are withholdings.
+- **Nothing may be answered from general knowledge.** The model knows a great
+  deal about Ted Bundy; almost none of it is in these files. An answer that
+  looks right but is not in the documents is the failure mode this system
+  exists to prevent.
+
+So most of the work is not the language model. It is turning damaged paper into
+something that can be cited.
+
+## What is measured
+
+| | |
 |---|---|
-| Pass rate | 8 / 10 |
-| Avg cost per query (Sonnet 4.6) | ~$0.006 |
-| Refusal correctness on out-of-corpus | 3 / 3 (no hallucinated answers) |
+| Eval suite | **15 / 17** questions passing |
+| Citations grounded | **12 / 12** — every citation in every answer points at a document actually retrieved |
+| Out-of-corpus questions | **refused, 3 / 3** — no hallucinated answers |
+| Cost per answered question | **$0.0108** average, measured across the suite |
+| Cost per refusal | **$0.00** — refusal happens before the model is called |
+| Ingestion, peak memory | 2,678 MB → **356 MB**, and flat regardless of document length |
+| Ingestion, throughput | **2.4× on 8 workers** (12 workers is slower than 4 — measured, see the scaling log) |
+| Unit tests | 43, running in ~2s with no network and no cost |
 
-### Known limits (intentionally not fixed in Phase 1)
+Every figure is reproducible from this repo. The two eval failures are
+described under [Known limits](#known-limits) rather than rounded away.
 
-- **Case-number queries** (e.g. *"What is case file 88-6895 about?"*) score
-  just below the refusal threshold despite correct retrieval. Phase 2 fix:
-  metadata-aware confidence override when query case-number matches chunk
-  metadata.
-- **Pure-paraphrase queries** with no contextual anchor (e.g. *"Tell me
-  about items collected as proof"*) fall below semantic resolution.
-  System refuses honestly rather than guess.
+## How it works
 
-Both are documented in `tests/eval_set.jsonl` and surface deliberately
-through the eval runner — *failures are signal, not bugs*.
-
-## Pipeline
+**Ingestion** turns a source PDF into citable chunks. Eight stages, resumable
+at page level, parallel across cores:
 
 ```
-PDF
- │
- ▼  probe              triage: real text PDF / scanned / garbage text layer
- ▼  ocr                300 DPI Tesseract, per-word confidence
- ▼  score_pages        clean/skipped buckets by confidence + letter ratio
- ▼  clean_pages        template-aware cleaner (FD-36 / FD-350 / 4-750 / ...)
- ▼  group_documents    multi-page documents grouped under shared doc_id
- ▼  chunk_documents    doc-aware chunks with overlap + FOIA placeholder synthesis
- ▼  embed_chunks       Pinecone serverless + integrated llama-text-embed-v2
- ▼  search             top-k semantic retrieval with metadata pre-filtering
- ▼  ask                refusal guardrail + Claude Sonnet 4.6 with citation prompt
+probe    is this a real text PDF or a scan?
+ocr      render + Tesseract, per-page confidence
+score    grade page quality, hold the file if the scan does not fit
+clean    strip boilerplate, normalise redactions, preserve facts
+group    assemble pages into documents, classify each
+correct  apply human judgements this case needs (corrections/<case>.json)
+chunk    ~500 tokens, never crossing a document, page numbers preserved
+embed    upsert to Pinecone, stable ids so re-runs overwrite
 ```
 
-A fact-preservation guardrail in `clean_pages.py` compares pre- and
-post-cleaning text to ensure no dates, dollar amounts, or case-file
-numbers are silently dropped during normalization.
+**Retrieval** searches the index with metadata pre-filtering — by case, by
+document kind, by case-file number — then applies a refusal threshold before
+any model is called.
 
-A retrieval-score refusal guardrail in `ask.py` prevents Claude from
-being given weak context — the single most impactful production defense
-against RAG hallucination.
+**Answering** hands the surviving excerpts to Claude under a prompt that
+forbids general knowledge and requires an inline `[doc-id, p.N]` citation for
+every claim.
 
-## Quick Start (Windows)
+The reasoning behind each of those choices is in
+[`docs/design.md`](docs/design.md).
 
-### 1. System dependencies
+## Quick start
 
-- [Tesseract OCR 5.x](https://github.com/UB-Mannheim/tesseract/wiki) — installed to `C:\Program Files\Tesseract-OCR\`
-- [Poppler](https://github.com/oschwartz10612/poppler-windows/releases) — extracted to `C:\Program Files\poppler\`
-
-Scripts auto-fall-back to these paths if the binaries aren't on `PATH`.
-
-### 2. Python environment
+Windows, PowerShell. Requires Tesseract and Poppler on PATH, and Python 3.13.
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+# 1. Environment
+py -3.13 -m venv .venv
+.venv\Scripts\pip.exe install -r requirements.txt -r requirements-dev.txt
+
+# 2. Keys — copy .env.example to .env and fill in
+#    ANTHROPIC_API_KEY, PINECONE_API_KEY, PINECONE_INDEX
+#    (COURTLISTENER_TOKEN is needed only for the court-opinion path)
+
+# 3. Ingest a folder of PDFs for one case
+.venv\Scripts\python.exe -m src.ingestion.batch data\cases\bundy\raw\scans\ `
+    --case bundy --threshold 60 --workers 8
+
+# 4. Ask
+.venv\Scripts\python.exe src\agents\ask.py "What evidence was found in the car?" --case bundy
 ```
 
-### 3. API keys
+### The web interface
 
 ```powershell
-copy .env.example .env
+.venv\Scripts\python.exe -m uvicorn src.api.app:app --reload   # API on :8000
+cd web; npm install; npm run dev                                # UI on :5173
 ```
 
-Then edit `.env`:
+The page shows the answer with each citation clickable, opening the excerpt the
+model actually read alongside its retrieval score, drawn against the refusal
+cut-off.
+
+### Adding a case
+
+1. Register it in [`src/cases.py`](src/cases.py)
+2. Put its PDFs in `data/cases/<case>/raw/scans/`
+3. Run the batch command above with `--case <case>`
+4. Judgements no rule can make go in `corrections/<case>.json`
+
+Court opinions come from a separate path —
+[`fetch_opinions.py`](src/ingestion/fetch_opinions.py) pulls them from the
+CourtListener API, and [`chunk_opinions.py`](src/ingestion/chunk_opinions.py)
+chunks them by legal topic rather than by page.
+
+## Project layout
 
 ```
-ANTHROPIC_API_KEY=sk-ant-...
-PINECONE_API_KEY=pcsk_...
-PINECONE_INDEX=casefile-ai-v1
+src/
+├── cases.py               registered cases; one source for ingestion and the API
+├── paths.py               where data lives; CASEFILE_DATA_ROOT relocates it
+├── ingestion/             probe, ocr, score, clean, group, correct, chunk
+│                          + batch.py (a folder at a time) and pipeline.py (one PDF)
+├── retrieval/             embed_chunks.py, search.py
+├── agents/ask.py          the RAG loop: retrieve, decide, generate
+└── api/app.py             FastAPI service over the same loop the eval scores
+web/                       React + TypeScript + Vite front end
+corrections/<case>.json    human judgements, in git because they cannot be regenerated
+tests/                     43 unit tests + the eval suite
+docs/                      design notes, the ingestion engineering log, data-prep log
+data/cases/<case>/         sources and derived artifacts (gitignored)
 ```
 
-### 4. One-time data prep on a fresh PDF
+## Known limits
 
-Drop the PDF in `data/raw/`, then:
+Recorded rather than fixed, because each is a real trade-off:
 
-```powershell
-python src\probe.py            data\raw\bundy-part-01.pdf
-python src\ocr.py              data\raw\bundy-part-01.pdf
-python src\score_pages.py      data\ocr\bundy-part-01\pages.jsonl --threshold 60
-python src\clean_pages.py      data\ocr\bundy-part-01\pages.jsonl
-python src\group_documents.py  data\ocr\bundy-part-01\pages.jsonl
-python src\chunk_documents.py  data\ocr\bundy-part-01\pages.jsonl
-python src\embed_chunks.py     data\ocr\bundy-part-01\chunks.jsonl
-```
+- **Two eval questions fail.** Case-number lookups (*"what is file 88-6895
+  about?"*) score just below the refusal threshold despite retrieving the right
+  documents; and pure paraphrase with no shared vocabulary falls below semantic
+  resolution. In both the system refuses honestly instead of guessing. The fix
+  is metadata-aware confidence, not a lower threshold.
+- **93 chunks are still classified `loose`** — documents whose form header the
+  template detector missed. Only `bundy-part-01` has been curated so far.
+- **Page images are not rendered.** The web interface shows a labelled
+  placeholder rather than the scan.
+- **Per-word OCR confidence is discarded.** Tesseract returns it; `ocr.py`
+  averages it per page and drops the rest, so misread words cannot be
+  highlighted without re-running OCR.
+- **One case so far.** The corpus is scoped by case and the filter works, but
+  cross-case bleed cannot be measured until a second case exists.
+- **CI does not build the front end.** Only `src/` and `tests/` are linted and
+  tested.
 
-### 5. Ask questions
+## Tech stack
 
-```powershell
-python src\ask.py "What evidence was used against Bundy?"
-python src\ask.py "Why did Bundy escape from Aspen?" --top-k 8
-python src\ask.py "What was withheld in this release?"
-python tests\run_eval.py
-```
+| Layer | |
+|---|---|
+| Ingestion | Python 3.13, Tesseract, Poppler, PyMuPDF |
+| Index | Pinecone serverless, `llama-text-embed-v2` integrated embedding |
+| Answering | Claude Sonnet 4.6 |
+| API | FastAPI + pydantic |
+| Front end | React 18, TypeScript, Vite, Tailwind 4 |
+| CI | GitHub Actions — ruff + pytest on every push |
 
-## Project Layout
+## Further reading
 
-```
-Case_File_AI/
-├── src/                       # Pipeline + RAG code
-│   ├── probe.py               # PDF triage (text / scanned / garbage layer)
-│   ├── tools_check.py         # Tesseract + Poppler verification
-│   ├── ocr.py                 # Bulk OCR at 300 DPI
-│   ├── score_pages.py         # Confidence threshold tuning
-│   ├── clean_pages.py         # Template-aware OCR cleaner
-│   ├── group_documents.py     # Multi-page document grouping
-│   ├── chunk_documents.py     # Document-aware chunking with overlap
-│   ├── embed_chunks.py        # Pinecone index setup + chunk upsert
-│   ├── search.py              # Semantic retrieval CLI
-│   └── ask.py                 # RAG query with citation + refusal guardrail
-│
-├── tests/                     # Regression eval suite
-│   ├── eval_set.jsonl         # 10 golden Q&A pairs
-│   └── run_eval.py            # Eval runner with 4 checks per question
-│
-├── scripts/                   # Dev / audit tools
-│   ├── inspect_unknowns.py
-│   ├── inspect_flags.py
-│   ├── inspect_chunks.py
-│   ├── ocr_report.py
-│   └── ...
-│
-├── docs/
-│   ├── roadmap.md             # Multi-phase architecture plan
-│   ├── cleaner-spec.md
-│   └── data-prep-log.md       # Decisions, bugs, fixes from Phase 1
-│
-├── data/                      # gitignored — raw PDFs + OCR outputs
-│   ├── raw/
-│   └── ocr/
-│
-├── requirements.txt
-├── .env.example
-└── .gitignore
-```
-
-## Tech Stack
-
-- **Python 3.13** — pipeline + RAG implementation
-- **Tesseract 5.5** + **Poppler 26.02** — OCR + PDF rendering
-- **Pinecone serverless** — vector index with integrated `llama-text-embed-v2` (1024 dims)
-- **Anthropic Claude Sonnet 4.6** — grounded answer generation with strict citation prompt
-- **Retrieval-score refusal guardrail** — `ask.py` declines to answer when top-1 score < 0.30, preventing hallucination on out-of-corpus queries
-
-## What's Next (Phase 2+)
-
-- **Reranking** — retrieve top-20, rerank to top-5 with cross-encoder for precision
-- **Hybrid retrieval** — combine vector similarity with BM25 keyword overlap
-- **Query rewriting** — Haiku-powered rewriting of casual queries into precise search terms
-- **Semantic caching** — Redis-backed cache of full responses for similar queries
-- **Multi-corpus ingestion** — extend beyond Bundy Part 01
-- **Web UI** (Next.js) — replace CLI with streaming chat interface
-- **LangFuse tracing** — observability for every Claude call (cost, latency, faithfulness)
-
+- [`docs/design.md`](docs/design.md) — the decisions and their reasoning
+- [`docs/ingestion-scaling.md`](docs/ingestion-scaling.md) — what broke as this
+  grew, how it was measured, what changed
+- [`docs/data-prep-log.md`](docs/data-prep-log.md) — OCR and cleaning decisions
+- [`docs/cleaner-spec.md`](docs/cleaner-spec.md) — the cleaning rules
