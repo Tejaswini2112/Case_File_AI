@@ -1,0 +1,91 @@
+{
+  "case": "bundy",
+  "note": "Judgements about individual documents that no rule produces. Applied by the pipeline after grouping; see src/ingestion/apply_corrections.py. Every entry needs a 'why' recording what a person saw, because in a year the reason is the only way to tell a correction from a mistake.",
+
+  "reclassify": [
+    {
+      "doc_id": "bundy-part-01__doc-003",
+      "kind": "form",
+      "why": "Bulky Exhibit Inventory — a form, but its header line was not matched by the template detector."
+    },
+    {
+      "doc_id": "bundy-part-01__doc-006",
+      "kind": "legal",
+      "why": "Federal Complaint under Title 18 section 1073."
+    },
+    {
+      "doc_id": "bundy-part-01__doc-012",
+      "kind": "form",
+      "why": "INS Lookout Notice, form FD-315."
+    },
+    {
+      "doc_id": "bundy-part-01__doc-013",
+      "kind": "newspaper",
+      "why": "Salt Lake Tribune article, 'Leaps Out Window'."
+    },
+    {
+      "doc_id": "bundy-part-01__doc-016",
+      "kind": "newspaper",
+      "why": "Continuation of a newspaper article."
+    },
+    {
+      "doc_id": "bundy-part-01__doc-023",
+      "kind": "form",
+      "why": "Second INS Lookout Notice."
+    },
+    {
+      "doc_id": "bundy-part-01__doc-024",
+      "kind": "teletype",
+      "why": "FBI airtel, SAC Denver to SAC Salt Lake City. Airtels are folded into teletype rather than given their own kind."
+    },
+    {
+      "doc_id": "bundy-part-01__doc-025",
+      "kind": "legal",
+      "why": "Federal Warrant of Arrest."
+    },
+    {
+      "doc_id": "bundy-part-01__doc-027",
+      "kind": "newspaper",
+      "why": "'Former Law Student' article."
+    },
+    {
+      "doc_id": "bundy-part-01__doc-032",
+      "kind": "memo",
+      "why": "Optional Form 10 internal memorandum."
+    },
+    {
+      "doc_id": "bundy-part-01__doc-035",
+      "kind": "legal",
+      "why": "Federal Motion and Order for Dismissal."
+    },
+    {
+      "doc_id": "bundy-part-01__doc-038",
+      "kind": "form",
+      "why": "FD-LS9, Record of Information Furnished."
+    },
+    {
+      "doc_id": "bundy-part-01__doc-041",
+      "kind": "teletype",
+      "why": "Salt Lake to Denver teletype about the Grand Junction RA telephone call. Grouped correctly once its inline FOIA withholding is absorbed, but its first page carries no detectable form header so the kind still has to be stated."
+    },
+    {
+      "doc_id": "bundy-part-01__doc-049",
+      "kind": "teletype",
+      "why": "Salt Lake to SAC Denver teletype dated 4 January 1978, same situation as doc-041."
+    },
+    {
+      "doc_id": "bundy-part-01__doc-017",
+      "kind": "teletype",
+      "why": "The long Denver teletype spanning pages 26-36 with two inline FOIA withholdings. Absorption reassembles it; its first page's template was not detected, so the kind is stated here."
+    }
+  ],
+
+  "merge": [
+    {
+      "parent": "bundy-part-01__doc-013",
+      "absorb": ["bundy-part-01__doc-014"],
+      "kind": "newspaper",
+      "why": "One Salt Lake Tribune article across pages 21 and 22. Page 21 is the FD-350 mount and page 22 the narrative continuation, but page 21's template was not detected, so the grouper had no continuation signal to work from. Not a rule — someone read both pages."
+    }
+  ]
+}

@@ -83,6 +83,17 @@ def batch_state_path(case: str) -> Path:
     return case_root(case) / "batch-state.json"
 
 
+def corrections_path(case: str) -> Path:
+    """Human judgements about this case's documents.
+
+    Deliberately outside DATA_ROOT and tracked in git. Everything under data/
+    is derived and can be regenerated from the sources; this cannot. It is a
+    record of someone reading a document and deciding what it is, and losing it
+    to a data wipe or a re-run is precisely the failure that made it necessary.
+    """
+    return REPO_ROOT / "corrections" / f"{case}.json"
+
+
 def known_case_dirs() -> list[Path]:
     """Case directories that actually exist on disk.
 

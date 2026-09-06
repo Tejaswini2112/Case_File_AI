@@ -120,6 +120,11 @@ def main() -> None:
         ("score",  score_cmd),
         ("clean",  [ING / "clean_pages.py",     pages]),
         ("group",  [ING / "group_documents.py", pages]),
+        # Human judgements that no rule produces, read from
+        # corrections/<case>.json. Part of the pipeline rather than a
+        # script someone remembers to run, because the previous
+        # arrangement lost them silently on every re-run.
+        ("correct", [ING / "apply_corrections.py", pages, "--case", args.case]),
         ("chunk",  [ING / "chunk_documents.py", pages, "--case", args.case]),
         ("embed",  [RET / "embed_chunks.py",    chunks]),
     ]
