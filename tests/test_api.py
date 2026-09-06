@@ -30,6 +30,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.api.app import app
+from src.cases import CASES, slugs
 
 # A retrieval score comfortably above the 0.30 refusal threshold, and one
 # comfortably below it. Named rather than inlined so a future change to
@@ -55,6 +56,7 @@ class FakeHit:
         self.score = score
         self.fields = {
             "doc_id": "bundy-part-01__doc-013",
+            "case": "bundy",
             "doc_kind": "teletype",
             "doc_template": "fd-36",
             "source_stem": "bundy-part-01",
@@ -145,7 +147,16 @@ def test_health_reports_ok(client_and_fakes):
     client, _, _ = client_and_fakes
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "index": "casefile-ai-test"}
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["index"] == "casefile-ai-test"
+
+
+def test_health_lists_the_known_cases(client_and_fakes):
+    """The front end labels cases from this rather than keeping its own copy,
+    so a case added to src/cases.py cannot be missing from the interface."""
+    client, _, _ = client_and_fakes
+    assert client.get("/health").json()["cases"] == CASES
 
 
 def test_health_does_not_touch_upstreams(client_and_fakes):
@@ -311,6 +322,60 @@ def test_every_real_doc_kind_is_accepted(client_and_fakes, kind):
     response = client.post("/ask", json={"question": "x", "doc_kind": kind})
     assert response.status_code == 200
     assert index.last_query["filter"] == {"doc_kind": {"$eq": kind}}
+
+
+# ---------------------------------------------------------------------------
+# case filtering
+# ---------------------------------------------------------------------------
+#
+# The mechanism is testable now; the guarantee is not. Proving that scoping
+# prevents one case's question being answered from another's documents needs a
+# second case to exist in the corpus. These cover that the filter is built,
+# reaches retrieval, and rejects what it should -- and stop short of a test that
+# would look like it proved the bleed case while only exercising one case.
+
+
+@pytest.mark.parametrize("case", slugs())
+def test_every_registered_case_is_accepted(client_and_fakes, case):
+    client, index, _ = client_and_fakes
+    response = client.post("/ask", json={"question": "x", "case": case})
+    assert response.status_code == 200
+    assert index.last_query["filter"] == {"case": {"$eq": case}}
+
+
+def test_unregistered_case_is_rejected(client_and_fakes):
+    """Same trap doc_kind had: an unknown value would filter the corpus away
+    and produce a refusal that reads as an empty corpus rather than a typo."""
+    client, index, claude = client_and_fakes
+
+    response = client.post("/ask", json={"question": "x", "case": "btk"})
+
+    assert response.status_code == 422
+    assert "bundy" in str(response.json())
+    assert index.last_query is None   # rejected before retrieval
+    assert claude.calls == []          # and before any spend
+
+
+def test_omitted_case_searches_every_case(client_and_fakes):
+    """Deliberate: cross-case questions are a product goal, so scoping is
+    opt-in rather than required."""
+    client, index, _ = client_and_fakes
+    client.post("/ask", json={"question": "x"})
+    assert "filter" not in index.last_query
+
+
+def test_case_and_doc_kind_combine(client_and_fakes):
+    client, index, _ = client_and_fakes
+    client.post("/ask", json={"question": "x", "case": "bundy", "doc_kind": "teletype"})
+    assert index.last_query["filter"] == {
+        "$and": [{"case": {"$eq": "bundy"}}, {"doc_kind": {"$eq": "teletype"}}]
+    }
+
+
+def test_hits_report_their_case(client_and_fakes):
+    client, _, _ = client_and_fakes
+    body = client.post("/ask", json={"question": "x"}).json()
+    assert body["hits"][0]["case"] == "bundy"
 
 
 # ---------------------------------------------------------------------------

@@ -41,7 +41,7 @@ from dotenv import load_dotenv
 # retrieval. Putting the repo root on sys.path makes the absolute import work
 # when ask.py is invoked directly as `python src/agents/ask.py` (cwd = root).
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from src.retrieval.search import connect_to_index, search
+from src.retrieval.search import build_filter, connect_to_index, search
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -325,6 +325,7 @@ def answer_question(
     threshold: float = REFUSAL_THRESHOLD,
     model: str = DEFAULT_MODEL,
     doc_kind: str | None = None,
+    case: str | None = None,
 ) -> dict:
     """
     Run the full retrieve → decide → generate loop and return a result dict.
@@ -350,7 +351,10 @@ def answer_question(
         {question, answer, refused, model, hits, usage}
     """
     # ---- 1. Retrieve -------------------------------------------------------
-    filter_dict = {"doc_kind": {"$eq": doc_kind}} if doc_kind else None
+    # build_filter rather than assembling the clause here: search.py already
+    # owns how filters are shaped, and a second construction would drift from it
+    # the moment either grows a field.
+    filter_dict = build_filter(doc_kind=doc_kind, case=case)
     hits = search(index, query_text=question, top_k=top_k, filter=filter_dict)
 
     # ---- 2. Decide: refuse if retrieval is too weak ------------------------
@@ -481,6 +485,11 @@ def main() -> None:
         help="Restrict retrieval to a single doc_kind (e.g. newspaper, teletype)",
     )
     ap.add_argument(
+        "--case",
+        help="Restrict retrieval to one investigation, e.g. bundy. "
+             "Omit to search every case.",
+    )
+    ap.add_argument(
         "--json",
         action="store_true",
         help="Emit structured JSON instead of human-readable output",
@@ -501,6 +510,7 @@ def main() -> None:
         threshold=args.threshold,
         model=args.model,
         doc_kind=args.doc_kind,
+        case=args.case,
     )
 
     if args.json:

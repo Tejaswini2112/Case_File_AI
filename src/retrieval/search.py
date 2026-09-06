@@ -148,6 +148,10 @@ def format_hit(hit) -> dict:
         "chunk_id":     hit.id,
         "score":        float(hit.score),
         "doc_id":       fields.get("doc_id"),
+        # Defaulted rather than required: a vector indexed before the field
+        # existed would otherwise raise here on read, and retrieval failing is
+        # a worse outcome than one hit showing an unknown case.
+        "case":         fields.get("case", "unknown"),
         "doc_kind":     fields.get("doc_kind"),
         "doc_template": fields.get("doc_template"),
         "source_stem":  fields.get("source_stem"),
@@ -163,9 +167,10 @@ def format_hit(hit) -> dict:
 
 
 def build_filter(
-    doc_kind: str | None,
-    case_num: str | None,
-    raw_filter: str | None,
+    doc_kind: str | None = None,
+    case_num: str | None = None,
+    raw_filter: str | None = None,
+    case: str | None = None,
 ) -> dict | None:
     """
     Compose the metadata filter from CLI shortcuts + an optional raw JSON
@@ -183,6 +188,17 @@ def build_filter(
     the filter's list).
     """
     clauses = []
+    # `case` is the investigation (bundy); `case_nums` are FBI file numbers
+    # inside it (88-6895). Confusingly similar names for unrelated things, kept
+    # because both are the domain's own vocabulary.
+    #
+    # Omitting `case` searches every investigation, which is deliberate: the
+    # product wants cross-case questions ("compare evidence handling in X and
+    # Y"), so scoping is opt-in. Callers that show results to a person should
+    # display which scope is in force, since "all cases" must never be a state
+    # someone is in without knowing.
+    if case:
+        clauses.append({"case": {"$eq": case}})
     if doc_kind:
         clauses.append({"doc_kind": {"$eq": doc_kind}})
     if case_num:
@@ -250,6 +266,10 @@ def main() -> None:
              "deletion-sheet, form, loose, teletype-cont",
     )
     ap.add_argument(
+        "--case",
+        help="Restrict to one investigation, e.g. bundy. Omit to search all cases.",
+    )
+    ap.add_argument(
         "--case-num",
         help="Filter by case file number (digits only, e.g. 886895)",
     )
@@ -266,7 +286,7 @@ def main() -> None:
     args = ap.parse_args()
 
     index, index_name = connect_to_index()
-    filter_dict = build_filter(args.doc_kind, args.case_num, args.filter)
+    filter_dict = build_filter(args.doc_kind, args.case_num, args.filter, args.case)
 
     results = search(
         index,

@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { ApiError, ask, type AskResponse, type Hit } from './api'
+import { useEffect, useState } from 'react'
+import { ApiError, ask, fetchCases, type AskResponse, type Cases, type Hit } from './api'
 import AskForm from './components/AskForm'
 import Brief from './components/Brief'
 import PageInspector from './components/PageInspector'
@@ -13,13 +13,23 @@ type View =
 export default function App() {
   const [view, setView] = useState<View>({ state: 'idle' })
   const [selected, setSelected] = useState<Hit | null>(null)
+  const [cases, setCases] = useState<Cases>({})
+  // Empty string means every case. Not null, so the select has a real value
+  // and React does not treat it as uncontrolled.
+  const [selectedCase, setSelectedCase] = useState('')
+
+  // Non-fatal if it fails: the scope selector degrades to "All cases", which is
+  // the default anyway, and asking questions still works.
+  useEffect(() => {
+    fetchCases().then(setCases).catch(() => {})
+  }, [])
 
   async function handleAsk(question: string) {
     setSelected(null)
     setView({ state: 'loading', question })
     const started = performance.now()
     try {
-      const result = await ask(question)
+      const result = await ask(question, { case: selectedCase || undefined })
       setView({
         state: 'answered',
         result,
@@ -81,7 +91,13 @@ export default function App() {
             </div>
           )}
 
-          <AskForm onAsk={handleAsk} busy={view.state === 'loading'} />
+          <AskForm
+            onAsk={handleAsk}
+            busy={view.state === 'loading'}
+            cases={cases}
+            selectedCase={selectedCase}
+            onSelectCase={setSelectedCase}
+          />
         </div>
       </div>
 

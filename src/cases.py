@@ -21,6 +21,8 @@ reads as "the corpus has nothing on this" rather than "you misspelled it".
 To add a case: add the slug and display name, then ingest with --case <slug>.
 """
 
+from typing import Literal
+
 # slug -> human-readable name. Slugs appear in chunk metadata and in API
 # filters, so they are lowercase and hyphenated, and should not change once
 # documents have been indexed under them.
@@ -31,6 +33,18 @@ CASES: dict[str, str] = {
 
 def slugs() -> list[str]:
     return sorted(CASES)
+
+
+# A type built from the registry, so the API's accepted values and the cases
+# that actually exist cannot disagree. Adding a case above gives the API its
+# validation and its generated dropdown with no second edit -- which is exactly
+# the coupling the DocKind literal in app.py has to warn about instead.
+#
+# Literal[tuple(...)] is the supported way to build one from a runtime sequence:
+# it expands to Literal["bundy", ...] and produces a real enum in the JSON
+# schema, so a bad value is a 422 naming the valid ones rather than a filter
+# that silently matches nothing.
+CaseSlug = Literal[tuple(slugs())]
 
 
 def is_known(slug: str) -> bool:

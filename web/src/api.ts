@@ -7,6 +7,7 @@ export type Hit = {
   rank: number
   chunk_id: string
   doc_id: string | null
+  case: string
   doc_kind: string | null
   page_nos: number[]
   case_nums: string[]
@@ -60,13 +61,38 @@ type ValidationDetail = { loc: (string | number)[]; msg: string }
  * API is unreachable — nearly always uvicorn not running, so the message says
  * so rather than surfacing a bare network error.
  */
-export async function ask(question: string, docKind?: string): Promise<AskResponse> {
+/** slug -> display name, as the API reports them. */
+export type Cases = Record<string, string>
+
+/**
+ * The cases this corpus holds, read from the API rather than listed here.
+ *
+ * Duplicating the list in the front end would mean a case added to
+ * src/cases.py silently missing from the interface, with nothing to catch the
+ * omission. One source, served.
+ */
+export async function fetchCases(): Promise<Cases> {
+  const res = await fetch('/health')
+  if (!res.ok) throw new ApiError(`Health check failed (HTTP ${res.status})`, res.status)
+  return (await res.json()).cases ?? {}
+}
+
+export async function ask(
+  question: string,
+  opts: { case?: string; docKind?: string } = {},
+): Promise<AskResponse> {
   let res: Response
   try {
     res = await fetch('/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(docKind ? { question, doc_kind: docKind } : { question }),
+      body: JSON.stringify({
+        question,
+        // Omitted rather than sent as null when unset: absent means "search
+        // every case", which is what makes cross-case questions possible.
+        ...(opts.case ? { case: opts.case } : {}),
+        ...(opts.docKind ? { doc_kind: opts.docKind } : {}),
+      }),
     })
   } catch {
     throw new ApiError('Cannot reach the API. Is uvicorn running on port 8000?', 0)

@@ -33,6 +33,7 @@ from src.agents.ask import (
     connect_to_anthropic,
     connect_to_index,
 )
+from src.cases import CASES, CaseSlug
 
 # Bound the blast radius of a hostile or careless caller. top_k feeds straight
 # into the prompt, so a request for 500 chunks is a request for a very large
@@ -157,6 +158,11 @@ class AskRequest(BaseModel):
         None,
         description="Restrict retrieval to one document kind. Omit to search everything.",
     )
+    case: CaseSlug | None = Field(
+        None,
+        description="Restrict retrieval to one investigation. Omit to search "
+                    "every case, which is what makes cross-case questions possible.",
+    )
 
 
 class Hit(BaseModel):
@@ -178,6 +184,7 @@ class Hit(BaseModel):
     rank: int
     chunk_id: str
     doc_id: str | None
+    case: str
     doc_kind: str | None
     page_nos: list[int]
     case_nums: list[str]
@@ -197,6 +204,11 @@ class AskResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     index: str
+    # The cases this corpus holds, slug -> display name. Served rather than
+    # duplicated in the front end so a case added to src/cases.py appears in the
+    # interface without a second edit, and the two can never disagree about
+    # which cases exist.
+    cases: dict[str, str]
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +227,7 @@ def health(request: Request) -> HealthResponse:
     down while we are perfectly able to serve. Orchestrators poll this
     endpoint constantly; it must stay nearly free.
     """
-    return HealthResponse(status="ok", index=request.app.state.index_name)
+    return HealthResponse(status="ok", index=request.app.state.index_name, cases=CASES)
 
 
 @app.post("/ask", response_model=AskResponse)
@@ -249,6 +261,7 @@ def ask(req: AskRequest, request: Request) -> AskResponse:
             threshold=req.threshold,
             model=req.model,
             doc_kind=req.doc_kind,
+            case=req.case,
         )
     except Exception as exc:
         # Pinecone or Anthropic failed — upstream outage, rate limit, bad model
@@ -269,6 +282,7 @@ def ask(req: AskRequest, request: Request) -> AskResponse:
                 rank=i,
                 chunk_id=h["chunk_id"],
                 doc_id=h["doc_id"],
+                case=h["case"],
                 doc_kind=h["doc_kind"],
                 page_nos=h["page_nos"],
                 case_nums=h["case_nums"],

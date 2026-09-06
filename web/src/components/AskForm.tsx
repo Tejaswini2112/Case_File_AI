@@ -1,5 +1,7 @@
 import { useState } from 'react'
 
+import type { Cases } from '../api'
+
 const EXAMPLES = [
   'What evidence was found in the car?',
   'How did Bundy escape from custody?',
@@ -9,9 +11,12 @@ const EXAMPLES = [
 type Props = {
   onAsk: (question: string) => void
   busy: boolean
+  cases: Cases
+  selectedCase: string
+  onSelectCase: (slug: string) => void
 }
 
-export default function AskForm({ onAsk, busy }: Props) {
+export default function AskForm({ onAsk, busy, cases, selectedCase, onSelectCase }: Props) {
   const [value, setValue] = useState('')
 
   function submit(question: string) {
@@ -45,6 +50,26 @@ export default function AskForm({ onAsk, busy }: Props) {
           {busy ? 'Reading' : 'Ask'}
         </button>
       </form>
+
+      {/* Scope is shown rather than implied. "All cases" is a real state with
+          consequences once the corpus holds more than one investigation, and a
+          reader should never be in it without knowing. */}
+      <div className="flex items-baseline gap-2 mt-4">
+        <span className="label-caps">Searching</span>
+        <select
+          value={selectedCase}
+          onChange={(e) => onSelectCase(e.target.value)}
+          disabled={busy}
+          className="text-[13px] bg-transparent border-b border-rule py-0.5
+                     hover:border-ink-faint focus:border-mark outline-none
+                     disabled:opacity-40"
+        >
+          <option value="">All cases</option>
+          {Object.entries(cases).map(([slug, name]) => (
+            <option key={slug} value={slug}>{name}</option>
+          ))}
+        </select>
+      </div>
 
       {/* The third example is out of corpus on purpose. A refusal is a feature
           of this system, and inviting one is the fastest way to demonstrate it. */}
