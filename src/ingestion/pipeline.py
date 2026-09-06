@@ -28,6 +28,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Imported rather than repeated as a bare 2, so the meaning of the code lives in
+# one place and the pipeline cannot drift from what score_pages actually exits
+# with.
+from src.ingestion.score_pages import EXIT_NEEDS_REVIEW
+
 # Windows consoles default to cp1252 and mangle the em-dash in our status
 # lines. The stage scripts all do this too — keep the pipeline consistent.
 sys.stdout.reconfigure(encoding="utf-8")
@@ -64,6 +69,11 @@ def main() -> None:
         help="OCR worker processes. Forwarded to ocr.py; omit to use its own "
              "default (half the machine's logical cores).",
     )
+    ap.add_argument(
+        "--accept-low-quality",
+        action="store_true",
+        help="Ingest even if the file trips a scan-quality check at the score stage.",
+    )
     ap.add_argument("--dry-run", action="store_true", help="Print the steps without running them")
     args = ap.parse_args()
 
@@ -79,6 +89,8 @@ def main() -> None:
     score_cmd = [ING / "score_pages.py", pages]
     if args.threshold is not None:
         score_cmd += ["--threshold", str(args.threshold)]
+    if args.accept_low_quality:
+        score_cmd += ["--accept-low-quality"]
 
     # ocr.py picks its own worker count unless told otherwise, so the flag is
     # only forwarded when explicitly set. Passing its default through here
@@ -121,6 +133,17 @@ def main() -> None:
 
         if not args.dry_run:
             result = subprocess.run([sys.executable, *map(str, cmd)], cwd=REPO_ROOT)
+
+            # score exits 2 when the file's scan quality does not fit the
+            # threshold it was given. That is not a failure — nothing broke, and
+            # the page data is intact — so it gets its own outcome and its own
+            # exit code rather than being buried among real errors. Stopping
+            # here is the point: the file reaches no further than scoring, so
+            # nothing has been written to the index.
+            if name == "score" and result.returncode == EXIT_NEEDS_REVIEW:
+                print(f"\n[REVIEW] {args.pdf.name} needs a look before indexing (see above).")
+                sys.exit(EXIT_NEEDS_REVIEW)
+
             if result.returncode != 0:
                 sys.exit(f"\n[FAIL] Stage '{name}' failed (exit {result.returncode}). Stopping here.")
 

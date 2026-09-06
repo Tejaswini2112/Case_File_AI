@@ -16,13 +16,32 @@ Usage (run from project root):
 
 import argparse
 import json
+import statistics
 import sys
 from collections import Counter
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
 
 BUCKETS = ("clean", "skipped")
+
+# Exit code meaning "this file needs a human, but nothing is broken".
+#
+# A third outcome is needed because a scan that does not fit the threshold is
+# neither a success nor a failure. Reporting it as a failure would bury it among
+# genuine errors; reporting it as success would index a document that is mostly
+# discarded pages without anyone noticing.
+EXIT_NEEDS_REVIEW = 2
+
+# Flag a file when more than this share of its pages would be thrown away.
+#
+# Calibrated against the corpus rather than guessed: the three Bundy releases
+# discard 24%, 22% and 20% of their pages at a threshold of 60, so a fifth is
+# normal for this scanning generation. Half is well outside that band, and means
+# either the scan is unusually poor or the threshold is wrong for this document
+# -- both of which want a person to look before the file reaches the index.
+MAX_SKIPPED_RATIO = 0.5
 
 
 def load_pages(jsonl_path: Path) -> list[dict]:
@@ -87,6 +106,36 @@ def assign_buckets(pages: list[dict], threshold: float) -> tuple[int, int]:
     return clean, skipped
 
 
+def quality_concerns(pages: list[dict], threshold: float, skipped: int) -> list[str]:
+    """Reasons this file should not be indexed without someone looking first.
+
+    Two checks, both self-contained — neither needs a corpus-wide baseline,
+    so they work on the first file ever ingested as well as the thousandth.
+
+    Deliberately not a per-file threshold. The threshold is an absolute quality
+    bar: text this garbled is not worth indexing regardless of what else is in
+    the document. Making it relative — keeping the best 80% of each file — would
+    rank rather than judge, so a uniformly terrible scan would keep its
+    least-terrible pages and a pristine one would discard good pages for nothing.
+    The bar stays fixed; what varies is whether we trust it for this file.
+    """
+    concerns = []
+    ratio = skipped / len(pages) if pages else 1.0
+    if ratio > MAX_SKIPPED_RATIO:
+        concerns.append(
+            f"{ratio:.0%} of pages below threshold {threshold:g} "
+            f"(normal for this corpus is around 20%)"
+        )
+
+    median = statistics.median(p["ocr_confidence"] for p in pages)
+    if median < threshold:
+        concerns.append(
+            f"median confidence {median:.1f} is below threshold {threshold:g}, "
+            f"so the typical page in this file fails the bar"
+        )
+    return concerns
+
+
 def write_bucketed(pages: list[dict], jsonl_path: Path) -> None:
     """Overwrite pages.jsonl with the bucket field populated."""
     with jsonl_path.open("w", encoding="utf-8") as f:
@@ -102,6 +151,13 @@ def main() -> None:
         type=float,
         default=None,
         help="OCR confidence threshold. If set, writes bucket assignments back to the JSONL.",
+    )
+    ap.add_argument(
+        "--accept-low-quality",
+        action="store_true",
+        help="Continue even when the file trips a quality check. For when you "
+             "have looked and decided it is fine — the gate is a speed bump, "
+             "not a wall.",
     )
     args = ap.parse_args()
 
@@ -143,6 +199,40 @@ def main() -> None:
         print(f"  skipped: {skipped:>3} pages  -> set aside (raw OCR preserved)")
         print(f"\nWrote bucket assignments back to {args.jsonl_path}")
         print("=" * 60)
+
+        # Buckets are written before the gate runs, deliberately. A file held
+        # for review is more useful with its bucket assignments in place —
+        # that is what a reviewer needs to look at — and nothing downstream
+        # runs unless the pipeline continues.
+
+        # Zero clean pages is not a judgement call, so --accept-low-quality does
+        # not apply. There is literally nothing to chunk: group_documents would
+        # assign no doc_ids and chunk_documents would fail with an error about
+        # missing fields, several stages downstream of the real cause. Saying so
+        # here points at the actual problem.
+        if clean == 0:
+            print(
+                f"\nNEEDS REVIEW — every page was discarded at threshold "
+                f"{args.threshold:g}, so there is nothing to ingest.\n"
+                f"Lower the threshold, or leave this file out."
+            )
+            sys.exit(EXIT_NEEDS_REVIEW)
+
+        concerns = quality_concerns(pages, args.threshold, skipped)
+        if concerns and not args.accept_low_quality:
+            print("\nNEEDS REVIEW — not continuing to the index:")
+            for concern in concerns:
+                print(f"  - {concern}")
+            print(
+                "\nLook at the histogram above, then either re-run with a "
+                "threshold suited to this file\nor pass --accept-low-quality "
+                "to ingest it as scored."
+            )
+            sys.exit(EXIT_NEEDS_REVIEW)
+        if concerns:
+            print("\n--accept-low-quality: continuing despite:")
+            for concern in concerns:
+                print(f"  - {concern}")
 
 
 if __name__ == "__main__":

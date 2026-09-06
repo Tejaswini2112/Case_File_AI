@@ -29,6 +29,7 @@ from pathlib import Path
 from pdf2image import pdfinfo_from_path
 
 from src.ingestion.ocr import find_poppler_bin, source_fingerprint
+from src.ingestion.score_pages import EXIT_NEEDS_REVIEW
 
 sys.stdout.reconfigure(encoding="utf-8")
 sys.stderr.reconfigure(encoding="utf-8")
@@ -147,12 +148,20 @@ def human_time(seconds: float) -> str:
     return f"{minutes / 60:.1f}h"
 
 
-def run_one(job: Job, threshold: float, workers: int, until: str | None) -> tuple[bool, str]:
-    """Run the full pipeline for one PDF. Returns (succeeded, detail).
+def run_one(
+    job: Job, threshold: float, workers: int, until: str | None, accept_low_quality: bool
+) -> tuple[str, str]:
+    """Run the full pipeline for one PDF. Returns (outcome, detail).
+
+    Outcome is "ok", "review" or "failed". Three rather than two because a file
+    whose scan quality does not fit the threshold is neither: nothing broke, but
+    it must not reach the index unexamined. Folding it into "failed" would bury
+    it among real errors, and folding it into "ok" would silently index a
+    document that is mostly discarded pages.
 
     Output is redirected to a per-file log rather than the console: at batch
     scale the page-by-page detail is thousands of lines, and it is only wanted
-    when something failed.
+    when something needs attention.
     """
     log_dir = REPO_ROOT / "data" / "ocr" / job.pdf.stem
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -165,12 +174,49 @@ def run_one(job: Job, threshold: float, workers: int, until: str | None) -> tupl
     ]
     if until:
         cmd += ["--until", until]
+    if accept_low_quality:
+        cmd += ["--accept-low-quality"]
     with log_path.open("w", encoding="utf-8") as log:
         result = subprocess.run(cmd, cwd=REPO_ROOT, stdout=log, stderr=subprocess.STDOUT)
 
     if result.returncode == 0:
-        return True, ""
-    return False, f"exit {result.returncode}, see {log_path.relative_to(REPO_ROOT)}"
+        return "ok", ""
+    if result.returncode == EXIT_NEEDS_REVIEW:
+        # The reason is in the log; surfacing it in the summary saves opening
+        # fifty logs to find the two that matter.
+        return "review", read_review_reason(log_path)
+    return "failed", f"exit {result.returncode}, see {log_path.relative_to(REPO_ROOT)}"
+
+
+def read_review_reason(log_path: Path) -> str:
+    """Pull the quality concerns out of a held file's log.
+
+    score_pages prints them as bullet lines under a NEEDS REVIEW heading. Read
+    back rather than passed through a return value because the stage runs as a
+    subprocess two levels down, and its exit code carries no room for detail.
+    """
+    try:
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return f"see {log_path.name}"
+
+    reasons: list[str] = []
+    for i, line in enumerate(lines):
+        if "NEEDS REVIEW" not in line:
+            continue
+        # The heading itself may carry the reason ("NEEDS REVIEW — every page
+        # was discarded..."), or introduce a bulleted list of them. Both shapes
+        # occur, so read whichever is present.
+        _, _, tail = line.partition("—")
+        if tail.strip():
+            reasons.append(tail.strip().rstrip(","))
+        for following in lines[i + 1:]:
+            stripped = following.strip()
+            if stripped.startswith("- "):
+                reasons.append(stripped[2:].strip())
+            elif reasons and not stripped:
+                break
+    return "; ".join(reasons) if reasons else f"see {log_path.name}"
 
 
 def main() -> None:
@@ -189,6 +235,11 @@ def main() -> None:
         "--until",
         help="Stop each file after this stage. Passed through to the pipeline; "
              "use --until chunk to ingest without writing to the live index.",
+    )
+    ap.add_argument(
+        "--accept-low-quality",
+        action="store_true",
+        help="Ingest files that trip a scan-quality check instead of holding them.",
     )
     ap.add_argument("--dry-run", action="store_true", help="Show the plan without running")
     args = ap.parse_args()
@@ -243,18 +294,20 @@ def main() -> None:
 
     print("-" * 72)
     started = time.time()
-    succeeded, failed = [], []
+    succeeded, review, failed = [], [], []
 
     for i, job in enumerate(todo, 1):
         label = f"[{i}/{len(todo)}] {job.pdf.name:<34} {job.pages:>5}p"
         print(f"{label}  running...", flush=True)
 
         t0 = time.time()
-        ok, detail = run_one(job, args.threshold, workers, args.until)
+        outcome, detail = run_one(
+            job, args.threshold, workers, args.until, args.accept_low_quality
+        )
         elapsed = time.time() - t0
 
         state[job.pdf.name] = {
-            "status": "ok" if ok else "failed",
+            "status": outcome,
             "fingerprint": job.fingerprint,
             "pages": job.pages,
             "seconds": round(elapsed, 1),
@@ -264,27 +317,55 @@ def main() -> None:
         # still know what it finished.
         save_state(state)
 
-        if ok:
+        if outcome == "ok":
             succeeded.append(job)
             print(f"{label}  ok in {human_time(elapsed)}")
+        elif outcome == "review":
+            review.append((job, detail))
+            print(f"{label}  NEEDS REVIEW — {detail}")
         else:
             failed.append((job, detail))
             print(f"{label}  FAILED — {detail}")
 
     print("-" * 72)
     print(f"Done in {human_time(time.time() - started)}.")
-    print(f"  succeeded : {len(succeeded)}")
-    print(f"  skipped   : {skipped}  (already complete)")
-    print(f"  failed    : {len(failed) + len(unreadable)}")
+    print(f"  ingested     : {len(succeeded)}")
+    print(f"  skipped      : {skipped}  (already complete)")
+    print(f"  needs review : {len(review)}")
+    for job, detail in review:
+        print(f"    {job.pdf.name}  —  {detail}")
+    print(f"  failed       : {len(failed) + len(unreadable)}")
     for job, detail in failed:
         print(f"    {job.pdf.name}  —  {detail}")
     for pdf, reason in unreadable:
         print(f"    {pdf.name}  —  unreadable: {reason}")
 
-    # Non-zero exit when anything failed, so a scheduled or scripted run is not
-    # reported as a success because most of it worked.
+    if review:
+        plural = "s" if len(review) != 1 else ""
+        # Suggesting the override to someone who already passed it would be
+        # useless advice: what remains held under --accept-low-quality is held
+        # because it has no usable pages at all, which only a lower threshold
+        # or dropping the file can fix.
+        remedy = (
+            "Lower the threshold for those files, or leave them out."
+            if args.accept_low_quality
+            else "Re-run with a threshold suited to them, or --accept-low-quality "
+                 "to ingest as scored."
+        )
+        print(
+            f"\nNothing was written to the index for the {len(review)} held "
+            f"file{plural}. {remedy}"
+        )
+
+    # Three exit codes for the three outcomes, so a scheduled run can tell them
+    # apart without parsing the summary: 1 means something broke and wants
+    # fixing, 2 means nothing broke but a person has to look before those files
+    # can be indexed. Failure wins when both happened — it is the more urgent
+    # of the two.
     if failed or unreadable:
         sys.exit(1)
+    if review:
+        sys.exit(EXIT_NEEDS_REVIEW)
 
 
 if __name__ == "__main__":
